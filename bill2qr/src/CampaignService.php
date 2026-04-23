@@ -148,6 +148,10 @@ final class CampaignService
                 continue;
             }
 
+            if ($this->isInlineBannerCampaign($campaign) && ($campaign['render_mode'] ?? '') === 'hosted_html') {
+                continue;
+            }
+
             if ($this->isPastFrequencyCap((int) $campaign['id'], $deviceUuid, $campaign['max_impressions_per_device'])) {
                 continue;
             }
@@ -211,7 +215,7 @@ final class CampaignService
         $campaignKey = (string) $campaign['campaign_key'];
         $htmlUrl = null;
 
-        if (($campaign['render_mode'] ?? '') === 'hosted_html') {
+        if (($campaign['render_mode'] ?? '') === 'hosted_html' && !$this->isInlineBannerCampaign($campaign)) {
             $query = http_build_query([
                 'campaign_key' => $campaignKey,
                 'device_uuid' => $deviceUuid,
@@ -270,6 +274,11 @@ final class CampaignService
             'label' => trim($label),
             'action_url' => is_string($url) && trim($url) !== '' ? trim($url) : null,
         ];
+    }
+
+    private function isInlineBannerCampaign(array $campaign): bool
+    {
+        return ($campaign['screen_type'] ?? '') === 'banner';
     }
 
     private function isCampaignActive(array $campaign): bool

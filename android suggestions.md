@@ -1,326 +1,333 @@
 # Android Suggestions
 
-Use this as the implementation handoff for the Android app integrating with the Bill2QR backend.
+Use this as the implementation handoff for the Android app changes around PIN UX cleanup, main-screen simplification, and campaign banner rollout.
 
 ## Core Direction
 
-- Persist a stable `device_uuid` on first app launch and reuse it forever.
-- Before showing any setup or login screen, always call:
+- Standardize every PIN experience with full-width segmented PIN boxes.
+- Remove `Claim User` and `Logout` from the owner main screen.
+- Show campaign content in two ways:
+  - inline top banner on the owner main screen
+  - full-screen campaign where a higher-priority announcement or offer needs interruption
 
-```http
-POST /device/check-eligibility
-```
+## 1. PIN UI Cleanup
 
-- Route the UI strictly from the backend response:
-  - `owner_login` -> show owner PIN login
-  - `user_login` -> show restricted user login
-  - `upi_lookup` -> ask for UPI ID to discover whether this device belongs under an existing owner account
+Apply one reusable PIN component across all PIN screens.
 
-## Hard Routing Rule
+### Required behavior
 
-- If backend already recognizes this `device_uuid`, never show setup on this device.
-- This remains true even after:
-  - reinstall
-  - app data clear
-  - local logout
-- Setup is allowed only when:
-  - backend says the device is unknown
-  - user enters a UPI ID
-  - backend confirms that no owner account exists for that UPI
-- If backend says the entered UPI already belongs to an existing account, do not keep the user in owner setup; switch to Add User flow.
+- PIN boxes should stretch across the available width.
+- Each digit cell should have equal width.
+- Use numeric keypad only.
+- Keep secure masking behavior.
+- Support auto-advance when typing.
+- Support backspace moving focus left.
+- Support paste when possible.
+- Show error state cleanly without changing layout drastically.
 
-## Backend Contract
+### Required titles
 
-Base URL:
+Use explicit titles above the PIN boxes instead of vague placeholders.
 
-```text
-https://api.actualintelligencesolutions.in/bill2qr
-```
+- Owner login: `Enter Owner PIN`
+- New owner PIN setup: `Enter New PIN`
+- Confirm owner PIN: `Confirm PIN`
+- User PIN setup: `Enter User PIN`
+- Confirm user PIN: `Confirm PIN`
+- Owner PIN verification for Add User flow: `Enter Owner PIN`
+- PIN reset: `Enter New PIN` and `Confirm PIN`
 
-### 1. Check Device Eligibility
+### Screens that should use the same PIN component
 
-Request:
+- owner login
+- owner PIN setup
+- owner PIN reset
+- user PIN setup
+- user PIN login
+- confirm PIN screens
 
-```json
-{
-  "device_uuid": "android-install-uuid",
-  "platform": "android"
-}
-```
+### Validation notes
 
-Known owner response:
-
-```json
-{
-  "success": true,
-  "data": {
-    "device_known": true,
-    "setup_allowed": false,
-    "device_role": "owner",
-    "next_step": "owner_login",
-    "owner_binding_status": "self"
-  }
-}
-```
-
-Known user response:
+- Do not change backend payload expectations for owner login.
+- Owner login still sends:
 
 ```json
 {
-  "success": true,
-  "data": {
-    "device_known": true,
-    "setup_allowed": false,
-    "device_role": "user",
-    "next_step": "user_login",
-    "owner_binding_status": "bound"
-  }
+  "device_uuid": "stored-device-uuid",
+  "pin": "1234"
 }
 ```
 
-Unknown device response:
+- If device UUID is missing locally, show a precise error instead of a generic required-fields error.
 
-```json
-{
-  "success": true,
-  "data": {
-    "device_known": false,
-    "setup_allowed": false,
-    "device_role": null,
-    "next_step": "upi_lookup",
-    "owner_binding_status": "unbound"
-  }
-}
-```
+## 2. Main Screen Cleanup
 
-### 2. Check UPI Association For Unknown Device
+On the owner main screen:
 
-Request:
-
-```json
-{
-  "device_uuid": "android-install-uuid",
-  "upi_id": "merchant@okaxis",
-  "platform": "android"
-}
-```
-
-If UPI is linked to an existing owner account:
-
-```json
-{
-  "success": true,
-  "data": {
-    "association_found": true,
-    "next_step": "owner_pin_for_user_claim"
-  }
-}
-```
-
-If UPI is not linked to any owner account:
-
-```json
-{
-  "success": true,
-  "data": {
-    "association_found": false,
-    "next_step": "owner_setup"
-  }
-}
-```
-
-If a new device still submits owner registration with a UPI already used by an existing root owner account, backend rejects the request with a conflict error and frontend should redirect to Add User flow.
-
-### 3. Verify Owner PIN For User Claim
-
-Request:
-
-```json
-{
-  "device_uuid": "android-install-uuid",
-  "upi_id": "merchant@okaxis",
-  "owner_pin": "4321"
-}
-```
-
-Success response:
-
-```json
-{
-  "success": true,
-  "data": {
-    "claim_grant": "CLAIM_GRANT_TOKEN",
-    "expires_in": 300,
-    "next_step": "register_user_device"
-  }
-}
-```
+- remove `Claim User`
+- remove `Logout`
 
 Important:
-- this is not a normal owner session
-- do not treat this as owner access
-- use it only for user-device registration
 
-### 4. Register User Device
+- do not remove backend support for logout
+- do not remove backend support for user-device registration
+- if logout still exists elsewhere, keep it in a secondary settings/profile surface
+- if Add User is still needed, surface it only inside the guided Add User flow and not as a persistent main action
+
+## 3. Campaign Banner Rollout
+
+Use the existing backend campaign system as the single source for both banner and full-screen campaign delivery.
+
+### Day-one rule
+
+- Owner home screen should request an inline banner campaign first.
+- Full-screen campaigns remain available for separate placements and higher-priority cases.
+
+### Owner home banner request
+
+Android should call:
+
+```http
+POST /campaigns/resolve
+```
+
+with:
+
+```json
+{
+  "device_uuid": "android-install-uuid",
+  "placement": "owner_home"
+}
+```
+
+### Expected campaign usage
+
+- `screen_type = banner`
+  - render inline near the top of the owner main screen
+  - non-blocking
+- `screen_type = full_screen`
+  - use the dedicated full-screen campaign path
+
+### Render mode rules
+
+- `native_json`
+  - first-class support for inline banner rendering
+  - preferred for owner-home banner
+- `hosted_html`
+  - allowed only for full-screen or dedicated campaign surfaces
+  - do not embed arbitrary hosted HTML inline inside the owner home screen banner area
+
+### Banner UI expectations
+
+- place banner near the top of the owner main screen
+- keep it clearly visible but not disruptive
+- show title, subtitle/body, CTA, and dismiss action if allowed
+- banner should not block calculator or payment interactions
+- if banner request fails, show no banner and continue loading the screen normally
+
+## 4. Backend Contract To Use
+
+### Resolve campaign
 
 Request:
 
 ```json
 {
   "device_uuid": "android-install-uuid",
-  "platform": "android",
-  "claim_grant": "CLAIM_GRANT_TOKEN"
+  "placement": "owner_home"
 }
 ```
 
-Response:
+Possible banner response:
 
 ```json
 {
   "success": true,
   "data": {
-    "message": "Device registered as a restricted user device.",
-    "device": {
-      "id": 2,
-      "device_uuid": "android-install-uuid",
-      "device_role": "user",
-      "owner_device_id": 1,
-      "upi_id": "merchant@okaxis"
+    "has_campaign": true,
+    "placement": "owner_home",
+    "campaign": {
+      "campaign_key": "festival-banner-2026",
+      "name": "Festival Banner",
+      "campaign_type": "offer",
+      "placement": "owner_home",
+      "render_mode": "native_json",
+      "screen_type": "banner",
+      "is_dismissible": true,
+      "priority": 100,
+      "device_context": {
+        "device_known": true,
+        "device_role": "owner"
+      },
+      "content": {
+        "title": "Festival Offer",
+        "subtitle": "Special pricing this week",
+        "body": "Tap to learn more.",
+        "primary_cta": {
+          "cta_id": "primary",
+          "label": "View Offer",
+          "action_url": "https://example.com/offer"
+        },
+        "secondary_cta": null,
+        "theme": {
+          "background": "#FFF4E5",
+          "foreground": "#5D3A00"
+        },
+        "payload": null,
+        "html_url": null
+      },
+      "tracking": {
+        "campaign_key": "festival-banner-2026",
+        "track_endpoint": "/campaigns/events"
+      }
     }
   }
 }
 ```
 
-### 5. Register Owner Device
-
-Use this only when:
-- device is unknown
-- entered UPI is not associated with any owner account
-
-Request:
+No-banner response:
 
 ```json
 {
-  "device_uuid": "android-install-uuid",
-  "device_name": "Owner Name",
-  "platform": "android",
-  "upi_id": "merchant@okaxis",
-  "recovery_phone": "9876543210",
-  "owner_pin": "4321"
+  "success": true,
+  "data": {
+    "has_campaign": false,
+    "placement": "owner_home"
+  }
 }
 ```
 
-If backend rejects this with a message like:
+### Track campaign events
 
-```text
-This UPI ID is already associated with an existing account. Continue with Add User flow on this device instead of creating a new owner setup.
+Android should log banner engagement using:
+
+```http
+POST /campaigns/events
 ```
 
-then frontend should:
+Examples:
 
-- show a user-friendly message that this UPI already belongs to an existing account
-- stop owner registration on this device
-- move to owner PIN verification and Add User flow
+Banner impression:
 
-## Recommended Android Flow
+```json
+{
+  "campaign_key": "festival-banner-2026",
+  "device_uuid": "android-install-uuid",
+  "event_type": "impression",
+  "metadata": {
+    "placement": "owner_home",
+    "screen_type": "banner"
+  }
+}
+```
 
-### A. Launch on any device
+Banner click:
 
-1. Create or load `device_uuid`
-2. Call `/device/check-eligibility`
-3. Route by response:
-   - `owner_login` -> owner PIN screen
-   - `user_login` -> user PIN screen
-   - `upi_lookup` -> UPI entry screen
+```json
+{
+  "campaign_key": "festival-banner-2026",
+  "device_uuid": "android-install-uuid",
+  "event_type": "click",
+  "cta_id": "primary",
+  "metadata": {
+    "placement": "owner_home",
+    "screen_type": "banner"
+  }
+}
+```
 
-### B. Unknown device with existing owner account
+Banner dismiss:
 
-1. Show UPI input
-2. Submit to `/device/check-upi-association`
-3. If `association_found = true`, do not show owner setup; show owner PIN verification screen
-4. Submit to `/device/verify-owner-for-claim`
-5. If valid, receive `claim_grant`
-6. Call `/device/register-user-device`
-7. After registration succeeds:
-   - save local-only `user_name`
-   - save local-only `user_pin`
-   - never show owner setup on this device
-   - future launches must go through backend eligibility and land on `user_login`
+```json
+{
+  "campaign_key": "festival-banner-2026",
+  "device_uuid": "android-install-uuid",
+  "event_type": "dismiss",
+  "metadata": {
+    "placement": "owner_home",
+    "screen_type": "banner"
+  }
+}
+```
 
-### C. Unknown device with no owner account for that UPI
+## 5. Recommended Android Flow
 
-1. Show UPI input
-2. Submit to `/device/check-upi-association`
-3. If `association_found = false`, show owner setup
-4. Submit owner setup to `/auth/register`
-5. If `/auth/register` says the UPI already belongs to an existing account, stop owner setup and switch to Add User flow
-6. Otherwise store returned owner tokens and owner device metadata
+### A. Owner main screen load
 
-### D. Duplicate-owner protection
+1. Load owner home screen.
+2. Call `/campaigns/resolve` with:
+   - `device_uuid`
+   - `placement = owner_home`
+3. If `has_campaign = false`, show no banner.
+4. If `has_campaign = true` and `screen_type = banner`, render the inline banner.
+5. If user taps CTA, track click and route accordingly.
+6. If banner is dismissible and user dismisses it, track dismiss and hide it locally for the current render/session.
 
-1. A new device must not be allowed to create a new owner account for a UPI already owned by another root owner device
-2. If this happens, backend returns an error and frontend should route to Add User flow
-3. The preferred message is:
-   - `This UPI ID is already associated with an existing account.`
+### B. Full-screen campaign flow
 
-### E. Later relaunch on claimed user device
+1. For placements intended to allow interruption, call `/campaigns/resolve` with that placement.
+2. If response returns `screen_type = full_screen`, show the dedicated campaign screen.
+3. If `render_mode = hosted_html`, open the dedicated hosted HTML campaign surface.
+4. Track impression, click, dismiss, and close as appropriate.
 
-1. Load `device_uuid`
-2. Call `/device/check-eligibility`
-3. Backend returns `user_login`
-4. Show only local user PIN login
-5. Do not show owner setup or owner login
+### C. Add User flow remains guided
 
-## Important UI And State Rules
+- Keep Add User as a guided flow after UPI association and owner PIN verification.
+- Do not expose `Claim User` as a persistent main-screen action.
 
-- Never show setup for a device already known to backend
-- Never show owner login for a known user device
-- Never show user setup for a known owner device
-- Hide owner-only edit/profile actions on user devices
-- Hide UPI setup and update screens on user devices
-- Keep `business_name` local-only in this phase
-- Keep local `user_name` and `user_pin` fully local-only
-- Do not call backend `reset-pin` for local user-pin reset
-- Treat backend `device_role` as authoritative even if local app data was cleared
-- Treat claim grant as single-purpose and short-lived
-- Do not persist claim grant longer than necessary
+## 6. Important UI And State Rules
 
-## Good Prompt For Codex On Android Repo
+- Main owner screen should not show `Claim User`.
+- Main owner screen should not show `Logout`.
+- Inline banner is owner-only in v1.
+- Banner fetch failure must never block the main screen.
+- Hosted HTML must not be embedded as an inline banner.
+- PIN titles should always be visible and screen-specific.
+- PIN component should have a consistent look across login, setup, and reset flows.
+
+## 7. Good Prompt For Codex On Android Repo
 
 ```text
-Integrate the Bill2QR Android app with the Bill2QR backend using device eligibility plus UPI-based unknown-device discovery.
+Implement the following Android changes for Bill2QR:
 
-Requirements:
-- Generate and persist a stable device_uuid on first app launch
-- Before showing setup/login, call POST /device/check-eligibility
-- Routing rules:
-  - known owner -> owner_login
-  - known user -> user_login
-  - unknown device -> upi_lookup
-- Never show setup for any backend-known device, even after reinstall or local reset
-- For unknown devices, prompt for UPI ID and call POST /device/check-upi-association
-- If UPI is associated with an existing owner account:
-  - collect owner PIN
-  - call POST /device/verify-owner-for-claim
-  - use returned claim_grant to call POST /device/register-user-device
-  - then collect local user_name and local user_pin
-- If UPI is not associated with an existing owner account:
-  - continue to owner setup
-  - call POST /auth/register
-- If POST /auth/register says the UPI already belongs to an existing account:
-  - do not keep the user in owner setup
-  - redirect into Add User flow
-- Map the install-time Name field to backend device_name
-- Keep business_name local-only
-- Keep user_name and user_pin local-only
-- Use backend only for owner/master credential flows and device registration
-- Hide owner-only UPI editing on user devices
-- Never call backend reset-pin for local user-pin forgot flow
-- Keep code aligned with the existing Android architecture and networking stack
+1. Replace all PIN inputs with a reusable segmented PIN component.
+   Requirements:
+   - full-width
+   - equal-width digit boxes
+   - secure numeric input
+   - auto-advance and backspace support
+   - visible title above the PIN field
+
+2. Use these titles where appropriate:
+   - Enter Owner PIN
+   - Enter New PIN
+   - Confirm PIN
+   - Enter User PIN
+
+3. Remove Claim User and Logout from the owner main screen only.
+   - Do not remove backend capability for either flow.
+   - Keep logout only in a secondary settings/profile area if needed.
+
+4. Add owner-home inline campaign banner support using the existing backend campaign API.
+   - On owner main screen load, call POST /campaigns/resolve with:
+     {
+       "device_uuid": "...",
+       "placement": "owner_home"
+     }
+   - If response returns a banner campaign, render it inline near the top.
+   - Support title, subtitle/body, CTA, theme, and dismiss.
+   - Track impression, click, and dismiss using POST /campaigns/events.
+
+5. Keep full-screen campaign support for non-banner placements.
+   - hosted_html is allowed only for full-screen/dedicated campaign surfaces
+   - do not embed hosted HTML inline inside the main screen banner
+
+6. Keep the main screen usable even if campaign fetch fails.
 
 After implementation, summarize:
 1. files changed
-2. exact backend payload mappings
-3. launch routing logic
-4. any remaining backend assumptions
+2. PIN component API and where it is used
+3. where Claim User and Logout were removed from
+4. exact owner_home campaign request/response handling
+5. any remaining backend assumptions
 ```
