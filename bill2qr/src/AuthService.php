@@ -18,9 +18,11 @@ final class AuthService
         $platform = $this->normalizeNullableString($input['platform'] ?? null, 50);
         $upiId = $this->validateUpiId($input['upi_id'] ?? null);
         $recoveryPhone = $this->validateRecoveryPhone($input['recovery_phone'] ?? null);
+        $ownerPin = $this->validatePin($input['owner_pin'] ?? null, 'owner_pin');
         $pinHash = password_hash($pin, PASSWORD_DEFAULT);
+        $ownerPinHash = password_hash($ownerPin, PASSWORD_DEFAULT);
 
-        if ($pinHash === false) {
+        if ($pinHash === false || $ownerPinHash === false) {
             throw new RuntimeException('Unable to hash PIN.', 500);
         }
 
@@ -37,6 +39,7 @@ final class AuthService
                          platform = :platform,
                          upi_id = :upi_id,
                          recovery_phone = :recovery_phone,
+                         owner_pin_hash = :owner_pin_hash,
                          is_active = 1,
                          updated_at = UTC_TIMESTAMP()
                      WHERE id = :id'
@@ -47,6 +50,7 @@ final class AuthService
                     'platform' => $platform,
                     'upi_id' => $upiId,
                     'recovery_phone' => $recoveryPhone,
+                    'owner_pin_hash' => $ownerPinHash,
                     'id' => $existing['id'],
                 ]);
 
@@ -61,6 +65,7 @@ final class AuthService
                         platform,
                         upi_id,
                         recovery_phone,
+                        owner_pin_hash,
                         pin_hash,
                         is_active,
                         created_at,
@@ -71,6 +76,7 @@ final class AuthService
                         :platform,
                         :upi_id,
                         :recovery_phone,
+                        :owner_pin_hash,
                         :pin_hash,
                         1,
                         UTC_TIMESTAMP(),
@@ -83,6 +89,7 @@ final class AuthService
                     'platform' => $platform,
                     'upi_id' => $upiId,
                     'recovery_phone' => $recoveryPhone,
+                    'owner_pin_hash' => $ownerPinHash,
                     'pin_hash' => $pinHash,
                 ]);
 
@@ -117,7 +124,7 @@ final class AuthService
     public function updateUpi(array $input): array
     {
         $deviceUuid = $this->validateDeviceUuid($input['device_uuid'] ?? null);
-        $recoveryPhone = $this->validateRecoveryPhone($input['recovery_phone'] ?? null);
+        $ownerPin = $this->validatePin($input['owner_pin'] ?? null, 'owner_pin');
         $newUpiId = $this->validateUpiId($input['new_upi_id'] ?? null, 'new_upi_id');
 
         $this->db->beginTransaction();
@@ -128,8 +135,8 @@ final class AuthService
                 throw new InvalidArgumentException('Device not found.', 404);
             }
 
-            if (!hash_equals((string) $device['recovery_phone'], $recoveryPhone)) {
-                throw new InvalidArgumentException('Invalid recovery phone.', 401);
+            if (!password_verify($ownerPin, (string) $device['owner_pin_hash'])) {
+                throw new InvalidArgumentException('Invalid owner PIN.', 401);
             }
 
             if (hash_equals((string) $device['upi_id'], $newUpiId)) {

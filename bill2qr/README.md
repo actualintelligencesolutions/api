@@ -37,7 +37,8 @@ Request:
   "device_name": "Pixel 8",
   "platform": "android",
   "upi_id": "merchant@okaxis",
-  "recovery_phone": "9876543210"
+  "recovery_phone": "9876543210",
+  "owner_pin": "4321"
 }
 ```
 
@@ -194,8 +195,8 @@ Request:
 ```json
 {
   "device_uuid": "android-install-uuid",
-  "recovery_phone": "9876543210",
-  "new_upi_id": "newmerchant@okicici"
+  "new_upi_id": "newmerchant@okicici",
+  "owner_pin": "4321"
 }
 ```
 

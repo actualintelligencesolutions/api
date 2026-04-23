@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS devices (
     platform VARCHAR(50) NULL,
     upi_id VARCHAR(100) NOT NULL,
     recovery_phone VARCHAR(20) NOT NULL,
+    owner_pin_hash VARCHAR(255) NOT NULL,
     pin_hash VARCHAR(255) NOT NULL,
     is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
