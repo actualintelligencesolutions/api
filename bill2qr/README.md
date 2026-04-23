@@ -26,7 +26,9 @@ php -S localhost:8000 -t public
 
 ## Request Examples
 
-### Register / Login
+### Register
+
+Request:
 
 ```json
 {
@@ -39,7 +41,76 @@ php -S localhost:8000 -t public
 }
 ```
 
+Response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "device": {
+      "id": 1,
+      "device_uuid": "android-install-uuid",
+      "device_name": "Pixel 8",
+      "platform": "android",
+      "upi_id": "merchant@okaxis",
+      "recovery_phone": "9876543210",
+      "is_active": true,
+      "created_at": "2026-04-23 05:25:32",
+      "updated_at": "2026-04-23 05:25:32",
+      "last_login_at": null
+    },
+    "tokens": {
+      "access_token": "ACCESS_TOKEN",
+      "token_type": "Bearer",
+      "expires_in": 900,
+      "refresh_token": "REFRESH_TOKEN"
+    }
+  }
+}
+```
+
+### Login
+
+Request:
+
+```json
+{
+  "device_uuid": "android-install-uuid",
+  "pin": "1234"
+}
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "device": {
+      "id": 1,
+      "device_uuid": "android-install-uuid",
+      "device_name": "Pixel 8",
+      "platform": "android",
+      "upi_id": "merchant@okaxis",
+      "recovery_phone": "9876543210",
+      "is_active": true,
+      "created_at": "2026-04-23 05:25:32",
+      "updated_at": "2026-04-23 05:30:12",
+      "last_login_at": "2026-04-23 05:30:12"
+    },
+    "tokens": {
+      "access_token": "ACCESS_TOKEN",
+      "token_type": "Bearer",
+      "expires_in": 900,
+      "refresh_token": "REFRESH_TOKEN"
+    }
+  }
+}
+```
+
 ### Refresh
+
+Request:
 
 ```json
 {
@@ -47,7 +118,37 @@ php -S localhost:8000 -t public
 }
 ```
 
+Response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "device": {
+      "id": 1,
+      "device_uuid": "android-install-uuid",
+      "device_name": "Pixel 8",
+      "platform": "android",
+      "upi_id": "merchant@okaxis",
+      "recovery_phone": "9876543210",
+      "is_active": true,
+      "created_at": "2026-04-23 05:25:32",
+      "updated_at": "2026-04-23 05:30:12",
+      "last_login_at": "2026-04-23 05:30:12"
+    },
+    "tokens": {
+      "access_token": "ACCESS_TOKEN",
+      "token_type": "Bearer",
+      "expires_in": 900,
+      "refresh_token": "REFRESH_TOKEN"
+    }
+  }
+}
+```
+
 ### Reset PIN
+
+Request:
 
 ```json
 {
@@ -57,7 +158,38 @@ php -S localhost:8000 -t public
 }
 ```
 
+Response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "message": "PIN reset successful.",
+    "device": {
+      "id": 1,
+      "device_uuid": "android-install-uuid",
+      "device_name": "Pixel 8",
+      "platform": "android",
+      "upi_id": "merchant@okaxis",
+      "recovery_phone": "9876543210",
+      "is_active": true,
+      "created_at": "2026-04-23 05:25:32",
+      "updated_at": "2026-04-23 05:40:00",
+      "last_login_at": "2026-04-23 05:30:12"
+    },
+    "tokens": {
+      "access_token": "ACCESS_TOKEN",
+      "token_type": "Bearer",
+      "expires_in": 900,
+      "refresh_token": "REFRESH_TOKEN"
+    }
+  }
+}
+```
+
 ### Update UPI
+
+Request:
 
 ```json
 {
@@ -67,10 +199,84 @@ php -S localhost:8000 -t public
 }
 ```
 
+Response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "message": "UPI ID updated successfully.",
+    "device": {
+      "id": 1,
+      "device_uuid": "android-install-uuid",
+      "device_name": "Pixel 8",
+      "platform": "android",
+      "upi_id": "newmerchant@okicici",
+      "recovery_phone": "9876543210",
+      "is_active": true,
+      "created_at": "2026-04-23 05:25:32",
+      "updated_at": "2026-04-23 05:45:00",
+      "last_login_at": "2026-04-23 05:30:12"
+    }
+  }
+}
+```
+
 ### Me
+
+Request:
 
 Send `Authorization: Bearer <access_token>`.
 
+Response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "device": {
+      "id": 1,
+      "device_uuid": "android-install-uuid",
+      "device_name": "Pixel 8",
+      "platform": "android",
+      "upi_id": "merchant@okaxis",
+      "recovery_phone": "9876543210",
+      "is_active": true,
+      "created_at": "2026-04-23 05:25:32",
+      "updated_at": "2026-04-23 05:45:00",
+      "last_login_at": "2026-04-23 05:30:12"
+    }
+  }
+}
+```
+
 ### Logout
 
+Request:
+
 Send `refresh_token` in the JSON body, or send a bearer access token to revoke all active refresh tokens for that device.
+
+Response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "message": "Logged out successfully."
+  }
+}
+```
+
+## Error Response Shape
+
+All errors return this JSON structure:
+
+```json
+{
+  "success": false,
+  "error": {
+    "message": "Human-readable error message",
+    "details": []
+  }
+}
+```
