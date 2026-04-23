@@ -19,9 +19,10 @@ final class AuthService
             return [
                 'status' => 200,
                 'data' => [
-                    'setup_allowed' => true,
+                    'device_known' => false,
+                    'setup_allowed' => false,
                     'device_role' => null,
-                    'next_step' => 'owner_setup',
+                    'next_step' => 'upi_lookup',
                     'owner_binding_status' => 'unbound',
                 ],
             ];
@@ -32,12 +33,234 @@ final class AuthService
         return [
             'status' => 200,
             'data' => [
+                'device_known' => true,
                 'setup_allowed' => false,
                 'device_role' => $role,
                 'next_step' => $role === 'user' ? 'user_login' : 'owner_login',
                 'owner_binding_status' => $this->ownerBindingStatus($device, $role),
             ],
         ];
+    }
+
+    public function checkUpiAssociation(array $input): array
+    {
+        $deviceUuid = $this->validateDeviceUuid($input['device_uuid'] ?? null);
+        $this->assertUnknownDevice($deviceUuid);
+        $upiId = $this->validateUpiId($input['upi_id'] ?? null);
+
+        $owner = $this->findOwnerRootByUpi($upiId);
+
+        return [
+            'status' => 200,
+            'data' => [
+                'association_found' => $owner !== null,
+                'next_step' => $owner !== null ? 'owner_pin_for_user_claim' : 'owner_setup',
+            ],
+        ];
+    }
+
+    public function verifyOwnerForClaim(array $input): array
+    {
+        $deviceUuid = $this->validateDeviceUuid($input['device_uuid'] ?? null);
+        $this->assertUnknownDevice($deviceUuid);
+        $upiId = $this->validateUpiId($input['upi_id'] ?? null);
+        $ownerPin = $this->validatePin($input['owner_pin'] ?? null, 'owner_pin');
+
+        $owner = $this->findOwnerRootByUpi($upiId);
+        if ($owner === null) {
+            throw new InvalidArgumentException('No owner account found for the provided UPI ID.', 404);
+        }
+
+        if (!password_verify($ownerPin, (string) $owner['owner_pin_hash'])) {
+            throw new InvalidArgumentException('Invalid owner PIN.', 401);
+        }
+
+        $claimGrant = $this->tokenService->generateClaimGrant();
+        $claimGrantHash = $this->tokenService->claimGrantHash($claimGrant);
+
+        $this->db->beginTransaction();
+
+        try {
+            $cleanup = $this->db->prepare(
+                'DELETE FROM device_claim_grants
+                 WHERE device_uuid = :device_uuid'
+            );
+            $cleanup->execute(['device_uuid' => $deviceUuid]);
+
+            $insert = $this->db->prepare(
+                'INSERT INTO device_claim_grants (
+                    owner_device_id,
+                    device_uuid,
+                    token_hash,
+                    expires_at,
+                    consumed_at,
+                    created_at
+                ) VALUES (
+                    :owner_device_id,
+                    :device_uuid,
+                    :token_hash,
+                    :expires_at,
+                    NULL,
+                    UTC_TIMESTAMP()
+                )'
+            );
+            $insert->execute([
+                'owner_device_id' => $owner['id'],
+                'device_uuid' => $deviceUuid,
+                'token_hash' => $claimGrantHash,
+                'expires_at' => $this->tokenService->claimGrantExpiry(),
+            ]);
+
+            $this->db->commit();
+
+            return [
+                'status' => 200,
+                'data' => [
+                    'claim_grant' => $claimGrant,
+                    'expires_in' => $this->tokenService->claimGrantTtlSeconds(),
+                    'next_step' => 'register_user_device',
+                ],
+            ];
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+
+            throw $e;
+        }
+    }
+
+    public function registerUserDevice(array $input): array
+    {
+        $deviceUuid = $this->validateDeviceUuid($input['device_uuid'] ?? null);
+        $claimGrant = $this->requireClaimGrant($input['claim_grant'] ?? null);
+        $platform = $this->normalizeNullableString($input['platform'] ?? null, 50);
+        $deviceName = $this->normalizeNullableString($input['device_name'] ?? null, 100);
+        $claimGrantHash = $this->tokenService->claimGrantHash($claimGrant);
+
+        $this->db->beginTransaction();
+
+        try {
+            $grant = $this->findActiveClaimGrant($claimGrantHash, true);
+            if ($grant === null) {
+                throw new InvalidArgumentException('Claim grant is invalid or expired.', 401);
+            }
+
+            if (!hash_equals((string) $grant['device_uuid'], $deviceUuid)) {
+                throw new InvalidArgumentException('Claim grant does not match this device.', 403);
+            }
+
+            $ownerRoot = $this->findDeviceById((int) $grant['owner_device_id'], true);
+            if ($ownerRoot === null || (int) $ownerRoot['is_active'] !== 1) {
+                throw new InvalidArgumentException('Owner account is not active.', 404);
+            }
+
+            $this->requireOwnerRootDevice($ownerRoot);
+
+            $existing = $this->findDeviceByUuid($deviceUuid, true);
+            if ($existing !== null && $this->resolveDeviceRole($existing) === 'owner') {
+                throw new InvalidArgumentException('An owner device cannot be converted through the user registration flow.', 409);
+            }
+
+            $resolvedDeviceName = $deviceName ?? $ownerRoot['device_name'];
+
+            if ($existing !== null) {
+                $update = $this->db->prepare(
+                    'UPDATE devices
+                     SET device_name = :device_name,
+                         platform = COALESCE(:platform, platform),
+                         upi_id = :upi_id,
+                         recovery_phone = :recovery_phone,
+                         owner_pin_hash = :owner_pin_hash,
+                         device_role = :device_role,
+                         owner_device_id = :owner_device_id,
+                         is_active = 1,
+                         updated_at = UTC_TIMESTAMP()
+                     WHERE id = :id'
+                );
+                $update->execute([
+                    'device_name' => $resolvedDeviceName,
+                    'platform' => $platform,
+                    'upi_id' => $ownerRoot['upi_id'],
+                    'recovery_phone' => $ownerRoot['recovery_phone'],
+                    'owner_pin_hash' => $ownerRoot['owner_pin_hash'],
+                    'device_role' => 'user',
+                    'owner_device_id' => $ownerRoot['id'],
+                    'id' => $existing['id'],
+                ]);
+
+                $deviceId = (int) $existing['id'];
+            } else {
+                $insert = $this->db->prepare(
+                    'INSERT INTO devices (
+                        device_uuid,
+                        device_name,
+                        platform,
+                        upi_id,
+                        recovery_phone,
+                        owner_pin_hash,
+                        device_role,
+                        owner_device_id,
+                        is_active,
+                        created_at,
+                        updated_at
+                    ) VALUES (
+                        :device_uuid,
+                        :device_name,
+                        :platform,
+                        :upi_id,
+                        :recovery_phone,
+                        :owner_pin_hash,
+                        :device_role,
+                        :owner_device_id,
+                        1,
+                        UTC_TIMESTAMP(),
+                        UTC_TIMESTAMP()
+                    )'
+                );
+                $insert->execute([
+                    'device_uuid' => $deviceUuid,
+                    'device_name' => $resolvedDeviceName,
+                    'platform' => $platform,
+                    'upi_id' => $ownerRoot['upi_id'],
+                    'recovery_phone' => $ownerRoot['recovery_phone'],
+                    'owner_pin_hash' => $ownerRoot['owner_pin_hash'],
+                    'device_role' => 'user',
+                    'owner_device_id' => $ownerRoot['id'],
+                ]);
+
+                $deviceId = (int) $this->db->lastInsertId();
+            }
+
+            $consume = $this->db->prepare(
+                'UPDATE device_claim_grants
+                 SET consumed_at = UTC_TIMESTAMP()
+                 WHERE id = :id'
+            );
+            $consume->execute(['id' => $grant['id']]);
+
+            $this->revokeAllRefreshTokensForDevice($deviceId);
+            $registered = $this->findDeviceById($deviceId, true);
+            if ($registered === null) {
+                throw new RuntimeException('User device registration failed.', 500);
+            }
+
+            $this->db->commit();
+
+            return [
+                'status' => 200,
+                'data' => [
+                    'message' => 'Device registered as a restricted user device.',
+                    'device' => $this->serializeDevice($registered),
+                ],
+            ];
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+
+            throw $e;
+        }
     }
 
     public function register(array $input): array
@@ -661,6 +884,48 @@ final class AuthService
         return is_array($token) ? $token : null;
     }
 
+    private function findActiveClaimGrant(string $tokenHash, bool $forUpdate = false): ?array
+    {
+        $sql = 'SELECT *
+                FROM device_claim_grants
+                WHERE token_hash = :token_hash
+                  AND consumed_at IS NULL
+                  AND expires_at > UTC_TIMESTAMP()
+                LIMIT 1';
+        if ($forUpdate) {
+            $sql .= ' FOR UPDATE';
+        }
+
+        $statement = $this->db->prepare($sql);
+        $statement->execute(['token_hash' => $tokenHash]);
+        $grant = $statement->fetch();
+
+        return is_array($grant) ? $grant : null;
+    }
+
+    private function findOwnerRootByUpi(string $upiId, bool $forUpdate = false): ?array
+    {
+        $sql = 'SELECT *
+                FROM devices
+                WHERE upi_id = :upi_id
+                  AND is_active = 1
+                  AND device_role = :device_role
+                  AND owner_device_id IS NULL
+                LIMIT 1';
+        if ($forUpdate) {
+            $sql .= ' FOR UPDATE';
+        }
+
+        $statement = $this->db->prepare($sql);
+        $statement->execute([
+            'upi_id' => $upiId,
+            'device_role' => 'owner',
+        ]);
+        $device = $statement->fetch();
+
+        return is_array($device) ? $device : null;
+    }
+
     private function validateDeviceUuid(mixed $value): string
     {
         if (!is_string($value)) {
@@ -760,6 +1025,15 @@ final class AuthService
         return trim($value);
     }
 
+    private function requireClaimGrant(mixed $value): string
+    {
+        if (!is_string($value) || trim($value) === '') {
+            throw new InvalidArgumentException('claim_grant is required.', 422);
+        }
+
+        return trim($value);
+    }
+
     private function hashPin(string $pin): string
     {
         $hash = password_hash($pin, PASSWORD_DEFAULT);
@@ -796,6 +1070,24 @@ final class AuthService
         }
 
         return $device;
+    }
+
+    private function requireOwnerRootDevice(array $device): array
+    {
+        $this->requireOwnerDevice($device);
+
+        if ($device['owner_device_id'] !== null) {
+            throw new InvalidArgumentException('Only the root owner device can authorize user-device registration.', 403);
+        }
+
+        return $device;
+    }
+
+    private function assertUnknownDevice(string $deviceUuid): void
+    {
+        if ($this->findDeviceByUuid($deviceUuid) !== null) {
+            throw new InvalidArgumentException('This device is already registered and cannot use the unknown-device flow.', 409);
+        }
     }
 
     private function authoritativeOwnerId(array $device): int

@@ -23,6 +23,7 @@ This lets the app enforce a dual-experience UX while the backend remains the sou
    - `database/migrations/20260423_add_upi_and_recovery_phone.sql`
    - `database/migrations/20260423_add_owner_pin_hash.sql` if your DB still needs it
    - `database/migrations/20260423_add_device_restriction_fields.sql`
+   - `database/migrations/20260423_add_device_claim_grants.sql`
 4. Serve the API with your preferred PHP web server, pointing the document root to `public/`.
 
 Example with PHP's built-in server:
@@ -34,6 +35,9 @@ php -S localhost:8000 -t public
 ## Endpoints
 
 - `POST /device/check-eligibility`
+- `POST /device/check-upi-association`
+- `POST /device/verify-owner-for-claim`
+- `POST /device/register-user-device`
 - `POST /auth/register`
 - `POST /auth/login`
 - `POST /device/claim-user`
@@ -46,7 +50,15 @@ php -S localhost:8000 -t public
 ## Route Intent
 
 - `POST /device/check-eligibility`
-  - tells Android whether this `device_uuid` should see owner setup, owner login, or user login
+  - tells Android whether this `device_uuid` should see owner login, user login, or the unknown-device UPI lookup flow
+- `POST /device/check-upi-association`
+  - used only for unknown devices
+  - checks whether the entered `upi_id` belongs to an existing root owner account
+- `POST /device/verify-owner-for-claim`
+  - used only for unknown devices
+  - verifies the owner PIN and returns a short-lived claim grant instead of a full owner session
+- `POST /device/register-user-device`
+  - consumes a claim grant and registers the current unknown device as a restricted user device
 - `POST /auth/register`
   - registers or updates an owner device only
   - explicitly rejects user-classified devices
@@ -81,9 +93,10 @@ Unknown device response:
 {
   "success": true,
   "data": {
-    "setup_allowed": true,
+    "device_known": false,
+    "setup_allowed": false,
     "device_role": null,
-    "next_step": "owner_setup",
+    "next_step": "upi_lookup",
     "owner_binding_status": "unbound"
   }
 }
@@ -95,6 +108,7 @@ User device response:
 {
   "success": true,
   "data": {
+    "device_known": true,
     "setup_allowed": false,
     "device_role": "user",
     "next_step": "user_login",
@@ -109,10 +123,109 @@ Owner device response:
 {
   "success": true,
   "data": {
+    "device_known": true,
     "setup_allowed": false,
     "device_role": "owner",
     "next_step": "owner_login",
     "owner_binding_status": "self"
+  }
+}
+```
+
+### Check UPI Association
+
+Request:
+
+```json
+{
+  "device_uuid": "android-install-uuid",
+  "upi_id": "merchant@okaxis",
+  "platform": "android"
+}
+```
+
+Associated owner response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "association_found": true,
+    "next_step": "owner_pin_for_user_claim"
+  }
+}
+```
+
+No owner found response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "association_found": false,
+    "next_step": "owner_setup"
+  }
+}
+```
+
+### Verify Owner For Claim
+
+Request:
+
+```json
+{
+  "device_uuid": "android-install-uuid",
+  "upi_id": "merchant@okaxis",
+  "owner_pin": "4321"
+}
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "claim_grant": "CLAIM_GRANT_TOKEN",
+    "expires_in": 300,
+    "next_step": "register_user_device"
+  }
+}
+```
+
+### Register User Device
+
+Request:
+
+```json
+{
+  "device_uuid": "android-install-uuid",
+  "platform": "android",
+  "claim_grant": "CLAIM_GRANT_TOKEN"
+}
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "message": "Device registered as a restricted user device.",
+    "device": {
+      "id": 2,
+      "device_uuid": "android-install-uuid",
+      "device_name": "Teat",
+      "platform": "android",
+      "upi_id": "merchant@okaxis",
+      "recovery_phone": "9876543210",
+      "device_role": "user",
+      "owner_device_id": 1,
+      "is_active": true,
+      "created_at": "2026-04-23 06:00:00",
+      "updated_at": "2026-04-23 06:00:00",
+      "last_login_at": null
+    }
   }
 }
 ```

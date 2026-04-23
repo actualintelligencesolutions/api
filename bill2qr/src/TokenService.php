@@ -8,6 +8,7 @@ final class TokenService
     private string $jwtIssuer;
     private int $accessTokenTtlMinutes;
     private int $refreshTokenTtlDays;
+    private int $claimGrantTtlMinutes;
 
     public function __construct()
     {
@@ -15,6 +16,7 @@ final class TokenService
         $this->jwtIssuer = env('JWT_ISSUER', 'bill2qr-api');
         $this->accessTokenTtlMinutes = max(1, (int) env('ACCESS_TOKEN_TTL_MINUTES', '15'));
         $this->refreshTokenTtlDays = max(1, (int) env('REFRESH_TOKEN_TTL_DAYS', '30'));
+        $this->claimGrantTtlMinutes = max(1, (int) env('CLAIM_GRANT_TTL_MINUTES', '5'));
 
         if ($this->jwtSecret === '') {
             throw new RuntimeException('JWT_SECRET is required.', 500);
@@ -97,9 +99,19 @@ final class TokenService
         return bin2hex(random_bytes(32));
     }
 
+    public function generateClaimGrant(): string
+    {
+        return bin2hex(random_bytes(32));
+    }
+
     public function refreshTokenHash(string $refreshToken): string
     {
         return hash('sha256', $refreshToken);
+    }
+
+    public function claimGrantHash(string $claimGrant): string
+    {
+        return hash('sha256', $claimGrant);
     }
 
     public function refreshTokenExpiry(): string
@@ -107,9 +119,19 @@ final class TokenService
         return gmdate('Y-m-d H:i:s', time() + ($this->refreshTokenTtlDays * 86400));
     }
 
+    public function claimGrantExpiry(): string
+    {
+        return gmdate('Y-m-d H:i:s', time() + ($this->claimGrantTtlMinutes * 60));
+    }
+
     public function accessTokenTtlMinutes(): int
     {
         return $this->accessTokenTtlMinutes;
+    }
+
+    public function claimGrantTtlSeconds(): int
+    {
+        return $this->claimGrantTtlMinutes * 60;
     }
 
     private function base64UrlEncode(string $input): string

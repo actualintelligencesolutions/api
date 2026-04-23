@@ -59,6 +59,24 @@ try {
         exit;
     }
 
+    if ($method === 'POST' && $path === '/device/check-upi-association') {
+        $result = $authService->checkUpiAssociation($body);
+        Response::success($result['data'], $result['status']);
+        exit;
+    }
+
+    if ($method === 'POST' && $path === '/device/verify-owner-for-claim') {
+        $result = $authService->verifyOwnerForClaim($body);
+        Response::success($result['data'], $result['status']);
+        exit;
+    }
+
+    if ($method === 'POST' && $path === '/device/register-user-device') {
+        $result = $authService->registerUserDevice($body);
+        Response::success($result['data'], $result['status']);
+        exit;
+    }
+
     if ($method === 'POST' && $path === '/auth/login') {
         $result = $authService->login($body);
         Response::success($result['data'], $result['status']);
