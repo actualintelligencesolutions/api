@@ -13,18 +13,12 @@ final class AuthService
     public function register(array $input): array
     {
         $deviceUuid = $this->validateDeviceUuid($input['device_uuid'] ?? null);
-        $pin = $this->validatePin($input['pin'] ?? null);
-        $deviceName = $this->normalizeNullableString($input['device_name'] ?? null, 100);
+        $deviceName = $this->validateRequiredString($input['device_name'] ?? null, 'device_name', 100);
         $platform = $this->normalizeNullableString($input['platform'] ?? null, 50);
         $upiId = $this->validateUpiId($input['upi_id'] ?? null);
         $recoveryPhone = $this->validateRecoveryPhone($input['recovery_phone'] ?? null);
         $ownerPin = $this->validatePin($input['owner_pin'] ?? null, 'owner_pin');
-        $pinHash = password_hash($pin, PASSWORD_DEFAULT);
-        $ownerPinHash = password_hash($ownerPin, PASSWORD_DEFAULT);
-
-        if ($pinHash === false || $ownerPinHash === false) {
-            throw new RuntimeException('Unable to hash PIN.', 500);
-        }
+        $ownerPinHash = $this->hashPin($ownerPin);
 
         $this->db->beginTransaction();
 
@@ -34,8 +28,7 @@ final class AuthService
             if ($existing !== null) {
                 $update = $this->db->prepare(
                     'UPDATE devices
-                     SET pin_hash = :pin_hash,
-                         device_name = :device_name,
+                     SET device_name = :device_name,
                          platform = :platform,
                          upi_id = :upi_id,
                          recovery_phone = :recovery_phone,
@@ -45,7 +38,6 @@ final class AuthService
                      WHERE id = :id'
                 );
                 $update->execute([
-                    'pin_hash' => $pinHash,
                     'device_name' => $deviceName,
                     'platform' => $platform,
                     'upi_id' => $upiId,
@@ -66,7 +58,6 @@ final class AuthService
                         upi_id,
                         recovery_phone,
                         owner_pin_hash,
-                        pin_hash,
                         is_active,
                         created_at,
                         updated_at
@@ -77,7 +68,6 @@ final class AuthService
                         :upi_id,
                         :recovery_phone,
                         :owner_pin_hash,
-                        :pin_hash,
                         1,
                         UTC_TIMESTAMP(),
                         UTC_TIMESTAMP()
@@ -90,7 +80,6 @@ final class AuthService
                     'upi_id' => $upiId,
                     'recovery_phone' => $recoveryPhone,
                     'owner_pin_hash' => $ownerPinHash,
-                    'pin_hash' => $pinHash,
                 ]);
 
                 $deviceId = (int) $this->db->lastInsertId();
@@ -99,7 +88,7 @@ final class AuthService
 
             $device = $this->findDeviceById($deviceId, true);
             if ($device === null) {
-                throw new RuntimeException('Device registration failed.');
+                throw new RuntimeException('Device registration failed.', 500);
             }
 
             $tokenBundle = $this->issueTokenBundle($device);
@@ -183,8 +172,8 @@ final class AuthService
         $pin = $this->validatePin($input['pin'] ?? null);
         $device = $this->findActiveDeviceByUuid($deviceUuid);
 
-        if ($device === null || !password_verify($pin, $device['pin_hash'])) {
-            throw new InvalidArgumentException('Invalid device UUID or PIN.', 401);
+        if ($device === null || !password_verify($pin, (string) $device['owner_pin_hash'])) {
+            throw new InvalidArgumentException('Invalid device UUID or owner PIN.', 401);
         }
 
         $this->db->beginTransaction();
@@ -198,8 +187,8 @@ final class AuthService
             );
             $touch->execute(['id' => $device['id']]);
 
-            $tokenBundle = $this->issueTokenBundle($device);
             $freshDevice = $this->findDeviceById((int) $device['id'], true);
+            $tokenBundle = $this->issueTokenBundle($freshDevice ?? $device);
 
             $this->db->commit();
 
@@ -274,6 +263,8 @@ final class AuthService
             throw new InvalidArgumentException('confirm_pin must match new_pin.', 422);
         }
 
+        $newPinHash = $this->hashPin($newPin);
+
         $this->db->beginTransaction();
 
         try {
@@ -282,19 +273,14 @@ final class AuthService
                 throw new InvalidArgumentException('Registered device not found.', 404);
             }
 
-            $newPinHash = password_hash($newPin, PASSWORD_DEFAULT);
-            if ($newPinHash === false) {
-                throw new RuntimeException('Unable to hash PIN.', 500);
-            }
-
             $update = $this->db->prepare(
                 'UPDATE devices
-                 SET pin_hash = :pin_hash,
+                 SET owner_pin_hash = :owner_pin_hash,
                      updated_at = UTC_TIMESTAMP()
                  WHERE id = :id'
             );
             $update->execute([
-                'pin_hash' => $newPinHash,
+                'owner_pin_hash' => $newPinHash,
                 'id' => $device['id'],
             ]);
 
@@ -310,7 +296,7 @@ final class AuthService
             return [
                 'status' => 200,
                 'data' => [
-                    'message' => 'PIN reset successful for registered device.',
+                    'message' => 'Owner PIN reset successful for registered device.',
                     'device' => $this->serializeDevice($freshDevice),
                     'tokens' => $tokenBundle,
                 ],
@@ -559,6 +545,20 @@ final class AuthService
         return $phone;
     }
 
+    private function validateRequiredString(mixed $value, string $field, int $maxLength): string
+    {
+        if (!is_string($value)) {
+            throw new InvalidArgumentException($field . ' is required.', 422);
+        }
+
+        $normalized = trim($value);
+        if ($normalized === '' || strlen($normalized) > $maxLength) {
+            throw new InvalidArgumentException($field . ' must be between 1 and ' . $maxLength . ' characters.', 422);
+        }
+
+        return $normalized;
+    }
+
     private function normalizeNullableString(mixed $value, int $maxLength): ?string
     {
         if ($value === null) {
@@ -580,6 +580,16 @@ final class AuthService
         }
 
         return trim($value);
+    }
+
+    private function hashPin(string $pin): string
+    {
+        $hash = password_hash($pin, PASSWORD_DEFAULT);
+        if ($hash === false) {
+            throw new RuntimeException('Unable to hash PIN.', 500);
+        }
+
+        return $hash;
     }
 
     private function serializeDevice(array $device): array

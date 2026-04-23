@@ -1,12 +1,25 @@
 # Bill2QR PHP Auth API
 
-Minimal framework-free PHP API for device-linked PIN authentication.
+Minimal framework-free PHP API for the backend-owned master credential used by the Bill2QR app.
+
+## Backend Intent
+
+This backend is intentionally the source of truth only for the device owner/master profile:
+
+- `device_uuid` is persisted by the app and sent on every auth call.
+- the backend stores the owner/master PIN only
+- the frontend may keep a separate local user PIN for day-to-day unlock
+- `business_name` remains local to the app in this pass
+- UPI updates stay owner-gated on the backend
+
+That means the app can support a dual-pin UX without forcing the backend to store a second app-user credential yet.
 
 ## Setup
 
 1. Copy `.env.example` to `.env` and fill in your MySQL and JWT values.
-2. Run `database/schema.sql` against your MySQL database.
-3. Serve the API with your preferred PHP web server, pointing the document root to `public/`.
+2. Run `database/schema.sql` against your MySQL database for a fresh install.
+3. If you already have an older Bill2QR database, apply `database/migrations/20260423_add_owner_pin_hash.sql`.
+4. Serve the API with your preferred PHP web server, pointing the document root to `public/`.
 
 Example with PHP's built-in server:
 
@@ -26,15 +39,14 @@ php -S localhost:8000 -t public
 
 ## Request Examples
 
-### Register
+### Register Owner Device
 
 Request:
 
 ```json
 {
   "device_uuid": "android-install-uuid",
-  "pin": "1234",
-  "device_name": "Pixel 8",
+  "device_name": "Teat",
   "platform": "android",
   "upi_id": "merchant@okaxis",
   "recovery_phone": "9876543210",
@@ -51,7 +63,7 @@ Response:
     "device": {
       "id": 1,
       "device_uuid": "android-install-uuid",
-      "device_name": "Pixel 8",
+      "device_name": "Teat",
       "platform": "android",
       "upi_id": "merchant@okaxis",
       "recovery_phone": "9876543210",
@@ -70,14 +82,14 @@ Response:
 }
 ```
 
-### Login
+### Login With Owner PIN
 
 Request:
 
 ```json
 {
   "device_uuid": "android-install-uuid",
-  "pin": "1234"
+  "pin": "4321"
 }
 ```
 
@@ -90,7 +102,7 @@ Response:
     "device": {
       "id": 1,
       "device_uuid": "android-install-uuid",
-      "device_name": "Pixel 8",
+      "device_name": "Teat",
       "platform": "android",
       "upi_id": "merchant@okaxis",
       "recovery_phone": "9876543210",
@@ -128,7 +140,7 @@ Response:
     "device": {
       "id": 1,
       "device_uuid": "android-install-uuid",
-      "device_name": "Pixel 8",
+      "device_name": "Teat",
       "platform": "android",
       "upi_id": "merchant@okaxis",
       "recovery_phone": "9876543210",
@@ -147,7 +159,7 @@ Response:
 }
 ```
 
-### Reset PIN
+### Reset Owner PIN
 
 Request:
 
@@ -165,11 +177,11 @@ Response:
 {
   "success": true,
   "data": {
-    "message": "PIN reset successful for registered device.",
+    "message": "Owner PIN reset successful for registered device.",
     "device": {
       "id": 1,
       "device_uuid": "android-install-uuid",
-      "device_name": "Pixel 8",
+      "device_name": "Teat",
       "platform": "android",
       "upi_id": "merchant@okaxis",
       "recovery_phone": "9876543210",
@@ -187,6 +199,8 @@ Response:
   }
 }
 ```
+
+The app’s separate user-pin forgot flow should remain local-only for now and should not call this API.
 
 ### Update UPI
 
@@ -210,7 +224,7 @@ Response:
     "device": {
       "id": 1,
       "device_uuid": "android-install-uuid",
-      "device_name": "Pixel 8",
+      "device_name": "Teat",
       "platform": "android",
       "upi_id": "newmerchant@okicici",
       "recovery_phone": "9876543210",
@@ -238,7 +252,7 @@ Response:
     "device": {
       "id": 1,
       "device_uuid": "android-install-uuid",
-      "device_name": "Pixel 8",
+      "device_name": "Teat",
       "platform": "android",
       "upi_id": "merchant@okaxis",
       "recovery_phone": "9876543210",
