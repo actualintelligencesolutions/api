@@ -153,8 +153,8 @@ Request:
 ```json
 {
   "device_uuid": "android-install-uuid",
-  "current_pin": "1234",
-  "new_pin": "5678"
+  "new_pin": "5678",
+  "confirm_pin": "5678"
 }
 ```
 
@@ -164,7 +164,7 @@ Response:
 {
   "success": true,
   "data": {
-    "message": "PIN reset successful.",
+    "message": "PIN reset successful for registered device.",
     "device": {
       "id": 1,
       "device_uuid": "android-install-uuid",

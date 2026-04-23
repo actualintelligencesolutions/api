@@ -260,19 +260,19 @@ final class AuthService
     public function resetPin(array $input): array
     {
         $deviceUuid = $this->validateDeviceUuid($input['device_uuid'] ?? null);
-        $currentPin = $this->validatePin($input['current_pin'] ?? null, 'current_pin');
         $newPin = $this->validatePin($input['new_pin'] ?? null, 'new_pin');
+        $confirmPin = $this->validatePin($input['confirm_pin'] ?? null, 'confirm_pin');
 
-        if (hash_equals($currentPin, $newPin)) {
-            throw new InvalidArgumentException('new_pin must be different from current_pin.', 422);
+        if (!hash_equals($newPin, $confirmPin)) {
+            throw new InvalidArgumentException('confirm_pin must match new_pin.', 422);
         }
 
         $this->db->beginTransaction();
 
         try {
             $device = $this->findActiveDeviceByUuid($deviceUuid, true);
-            if ($device === null || !password_verify($currentPin, $device['pin_hash'])) {
-                throw new InvalidArgumentException('Invalid device UUID or current PIN.', 401);
+            if ($device === null) {
+                throw new InvalidArgumentException('Registered device not found.', 404);
             }
 
             $newPinHash = password_hash($newPin, PASSWORD_DEFAULT);
@@ -303,7 +303,7 @@ final class AuthService
             return [
                 'status' => 200,
                 'data' => [
-                    'message' => 'PIN reset successful.',
+                    'message' => 'PIN reset successful for registered device.',
                     'device' => $this->serializeDevice($freshDevice),
                     'tokens' => $tokenBundle,
                 ],
