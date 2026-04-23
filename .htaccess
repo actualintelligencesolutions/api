@@ -1,0 +1,10 @@
+RewriteEngine On
+
+# Serve existing files and directories directly.
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Route Bill2QR API requests through the public front controller.
+RewriteRule ^bill2qr/?$ bill2qr/public/index.php [QSA,L]
+RewriteRule ^bill2qr/(.*)$ bill2qr/public/index.php [QSA,L]
