@@ -59,6 +59,12 @@ try {
         exit;
     }
 
+    if ($method === 'POST' && $path === '/auth/reset-pin') {
+        $result = $authService->resetPin($body);
+        Response::success($result['data'], $result['status']);
+        exit;
+    }
+
     if ($method === 'POST' && $path === '/auth/refresh') {
         $refreshToken = extractRefreshToken($body);
         $result = $authService->refresh($refreshToken);

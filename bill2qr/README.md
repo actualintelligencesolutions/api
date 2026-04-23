@@ -18,6 +18,7 @@ php -S localhost:8000 -t public
 
 - `POST /auth/register`
 - `POST /auth/login`
+- `POST /auth/reset-pin`
 - `POST /auth/refresh`
 - `POST /auth/logout`
 - `GET /auth/me`
@@ -40,6 +41,16 @@ php -S localhost:8000 -t public
 ```json
 {
   "refresh_token": "your_refresh_token"
+}
+```
+
+### Reset PIN
+
+```json
+{
+  "device_uuid": "android-install-uuid",
+  "current_pin": "1234",
+  "new_pin": "5678"
 }
 ```
 

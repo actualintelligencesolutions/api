@@ -189,6 +189,66 @@ final class AuthService
         }
     }
 
+    public function resetPin(array $input): array
+    {
+        $deviceUuid = $this->validateDeviceUuid($input['device_uuid'] ?? null);
+        $currentPin = $this->validatePin($input['current_pin'] ?? null, 'current_pin');
+        $newPin = $this->validatePin($input['new_pin'] ?? null, 'new_pin');
+
+        if (hash_equals($currentPin, $newPin)) {
+            throw new InvalidArgumentException('new_pin must be different from current_pin.', 422);
+        }
+
+        $this->db->beginTransaction();
+
+        try {
+            $device = $this->findActiveDeviceByUuid($deviceUuid, true);
+            if ($device === null || !password_verify($currentPin, $device['pin_hash'])) {
+                throw new InvalidArgumentException('Invalid device UUID or current PIN.', 401);
+            }
+
+            $newPinHash = password_hash($newPin, PASSWORD_DEFAULT);
+            if ($newPinHash === false) {
+                throw new RuntimeException('Unable to hash PIN.', 500);
+            }
+
+            $update = $this->db->prepare(
+                'UPDATE devices
+                 SET pin_hash = :pin_hash,
+                     updated_at = UTC_TIMESTAMP()
+                 WHERE id = :id'
+            );
+            $update->execute([
+                'pin_hash' => $newPinHash,
+                'id' => $device['id'],
+            ]);
+
+            $this->revokeAllRefreshTokensForDevice((int) $device['id']);
+            $freshDevice = $this->findDeviceById((int) $device['id'], true);
+            if ($freshDevice === null) {
+                throw new RuntimeException('Device not found after PIN reset.', 500);
+            }
+
+            $tokenBundle = $this->issueTokenBundle($freshDevice);
+            $this->db->commit();
+
+            return [
+                'status' => 200,
+                'data' => [
+                    'message' => 'PIN reset successful.',
+                    'device' => $this->serializeDevice($freshDevice),
+                    'tokens' => $tokenBundle,
+                ],
+            ];
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+
+            throw $e;
+        }
+    }
+
     public function logout(?string $refreshToken, ?array $currentDevice = null): array
     {
         if ($refreshToken !== null && trim($refreshToken) !== '') {
@@ -297,15 +357,18 @@ final class AuthService
         $statement->execute(['device_id' => $deviceId]);
     }
 
-    private function findActiveDeviceByUuid(string $deviceUuid): ?array
+    private function findActiveDeviceByUuid(string $deviceUuid, bool $forUpdate = false): ?array
     {
-        $statement = $this->db->prepare(
-            'SELECT *
-             FROM devices
-             WHERE device_uuid = :device_uuid
-               AND is_active = 1
-             LIMIT 1'
-        );
+        $sql = 'SELECT *
+                FROM devices
+                WHERE device_uuid = :device_uuid
+                  AND is_active = 1
+                LIMIT 1';
+        if ($forUpdate) {
+            $sql .= ' FOR UPDATE';
+        }
+
+        $statement = $this->db->prepare($sql);
         $statement->execute(['device_uuid' => $deviceUuid]);
         $device = $statement->fetch();
 
@@ -373,17 +436,17 @@ final class AuthService
         return $value;
     }
 
-    private function validatePin(mixed $value): string
+    private function validatePin(mixed $value, string $field = 'pin'): string
     {
         if (!is_string($value) && !is_numeric($value)) {
-            throw new InvalidArgumentException('pin is required.', 422);
+            throw new InvalidArgumentException($field . ' is required.', 422);
         }
 
         $pin = trim((string) $value);
         $length = strlen($pin);
 
         if ($length < 4 || $length > 8) {
-            throw new InvalidArgumentException('pin must be between 4 and 8 characters.', 422);
+            throw new InvalidArgumentException($field . ' must be between 4 and 8 characters.', 422);
         }
 
         return $pin;
