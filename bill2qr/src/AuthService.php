@@ -10,6 +10,36 @@ final class AuthService
     ) {
     }
 
+    public function checkEligibility(array $input): array
+    {
+        $deviceUuid = $this->validateDeviceUuid($input['device_uuid'] ?? null);
+        $device = $this->findDeviceByUuid($deviceUuid);
+
+        if ($device === null) {
+            return [
+                'status' => 200,
+                'data' => [
+                    'setup_allowed' => true,
+                    'device_role' => null,
+                    'next_step' => 'owner_setup',
+                    'owner_binding_status' => 'unbound',
+                ],
+            ];
+        }
+
+        $role = $this->resolveDeviceRole($device);
+
+        return [
+            'status' => 200,
+            'data' => [
+                'setup_allowed' => false,
+                'device_role' => $role,
+                'next_step' => $role === 'user' ? 'user_login' : 'owner_login',
+                'owner_binding_status' => $this->ownerBindingStatus($device, $role),
+            ],
+        ];
+    }
+
     public function register(array $input): array
     {
         $deviceUuid = $this->validateDeviceUuid($input['device_uuid'] ?? null);
@@ -25,6 +55,10 @@ final class AuthService
         try {
             $existing = $this->findDeviceByUuid($deviceUuid, true);
 
+            if ($existing !== null && $this->resolveDeviceRole($existing) === 'user') {
+                throw new InvalidArgumentException('This device is restricted to user mode and cannot create or modify owner setup.', 403);
+            }
+
             if ($existing !== null) {
                 $update = $this->db->prepare(
                     'UPDATE devices
@@ -33,6 +67,8 @@ final class AuthService
                          upi_id = :upi_id,
                          recovery_phone = :recovery_phone,
                          owner_pin_hash = :owner_pin_hash,
+                         device_role = :device_role,
+                         owner_device_id = NULL,
                          is_active = 1,
                          updated_at = UTC_TIMESTAMP()
                      WHERE id = :id'
@@ -43,6 +79,7 @@ final class AuthService
                     'upi_id' => $upiId,
                     'recovery_phone' => $recoveryPhone,
                     'owner_pin_hash' => $ownerPinHash,
+                    'device_role' => 'owner',
                     'id' => $existing['id'],
                 ]);
 
@@ -58,6 +95,8 @@ final class AuthService
                         upi_id,
                         recovery_phone,
                         owner_pin_hash,
+                        device_role,
+                        owner_device_id,
                         is_active,
                         created_at,
                         updated_at
@@ -68,6 +107,8 @@ final class AuthService
                         :upi_id,
                         :recovery_phone,
                         :owner_pin_hash,
+                        :device_role,
+                        NULL,
                         1,
                         UTC_TIMESTAMP(),
                         UTC_TIMESTAMP()
@@ -80,6 +121,7 @@ final class AuthService
                     'upi_id' => $upiId,
                     'recovery_phone' => $recoveryPhone,
                     'owner_pin_hash' => $ownerPinHash,
+                    'device_role' => 'owner',
                 ]);
 
                 $deviceId = (int) $this->db->lastInsertId();
@@ -110,6 +152,130 @@ final class AuthService
         }
     }
 
+    public function claimUserDevice(array $input, array $currentDevice): array
+    {
+        $targetDeviceUuid = $this->validateDeviceUuid($input['device_uuid'] ?? null);
+        $platform = $this->normalizeNullableString($input['platform'] ?? null, 50);
+        $ownerDevice = $this->requireOwnerDevice($currentDevice);
+        $ownerRootId = $this->authoritativeOwnerId($ownerDevice);
+
+        if ($targetDeviceUuid === $ownerDevice['device_uuid']) {
+            throw new InvalidArgumentException('Owner device cannot be converted into a user device.', 422);
+        }
+
+        $this->db->beginTransaction();
+
+        try {
+            $ownerRoot = $this->findDeviceById($ownerRootId, true);
+            if ($ownerRoot === null) {
+                throw new RuntimeException('Authoritative owner device not found.', 500);
+            }
+
+            $target = $this->findDeviceByUuid($targetDeviceUuid, true);
+
+            if ($target !== null) {
+                $targetRole = $this->resolveDeviceRole($target);
+
+                if ($targetRole === 'owner') {
+                    throw new InvalidArgumentException('An owner device cannot be claimed as a user device.', 409);
+                }
+
+                $boundOwnerId = $target['owner_device_id'] !== null ? (int) $target['owner_device_id'] : null;
+                if ($boundOwnerId !== null && $boundOwnerId !== $ownerRootId) {
+                    throw new InvalidArgumentException('This device is already bound to a different owner account.', 409);
+                }
+
+                $update = $this->db->prepare(
+                    'UPDATE devices
+                     SET device_name = :device_name,
+                         platform = COALESCE(:platform, platform),
+                         upi_id = :upi_id,
+                         recovery_phone = :recovery_phone,
+                         owner_pin_hash = :owner_pin_hash,
+                         device_role = :device_role,
+                         owner_device_id = :owner_device_id,
+                         is_active = 1,
+                         updated_at = UTC_TIMESTAMP()
+                     WHERE id = :id'
+                );
+                $update->execute([
+                    'device_name' => $ownerRoot['device_name'],
+                    'platform' => $platform,
+                    'upi_id' => $ownerRoot['upi_id'],
+                    'recovery_phone' => $ownerRoot['recovery_phone'],
+                    'owner_pin_hash' => $ownerRoot['owner_pin_hash'],
+                    'device_role' => 'user',
+                    'owner_device_id' => $ownerRootId,
+                    'id' => $target['id'],
+                ]);
+
+                $targetId = (int) $target['id'];
+            } else {
+                $insert = $this->db->prepare(
+                    'INSERT INTO devices (
+                        device_uuid,
+                        device_name,
+                        platform,
+                        upi_id,
+                        recovery_phone,
+                        owner_pin_hash,
+                        device_role,
+                        owner_device_id,
+                        is_active,
+                        created_at,
+                        updated_at
+                    ) VALUES (
+                        :device_uuid,
+                        :device_name,
+                        :platform,
+                        :upi_id,
+                        :recovery_phone,
+                        :owner_pin_hash,
+                        :device_role,
+                        :owner_device_id,
+                        1,
+                        UTC_TIMESTAMP(),
+                        UTC_TIMESTAMP()
+                    )'
+                );
+                $insert->execute([
+                    'device_uuid' => $targetDeviceUuid,
+                    'device_name' => $ownerRoot['device_name'],
+                    'platform' => $platform,
+                    'upi_id' => $ownerRoot['upi_id'],
+                    'recovery_phone' => $ownerRoot['recovery_phone'],
+                    'owner_pin_hash' => $ownerRoot['owner_pin_hash'],
+                    'device_role' => 'user',
+                    'owner_device_id' => $ownerRootId,
+                ]);
+
+                $targetId = (int) $this->db->lastInsertId();
+            }
+
+            $claimed = $this->findDeviceById($targetId, true);
+            if ($claimed === null) {
+                throw new RuntimeException('User device claim failed.', 500);
+            }
+
+            $this->revokeAllRefreshTokensForDevice($targetId);
+            $this->db->commit();
+
+            return [
+                'status' => 200,
+                'data' => [
+                    'message' => 'Device claimed as a restricted user device.',
+                    'device' => $this->serializeDevice($claimed),
+                ],
+            ];
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+
+            throw $e;
+        }
+    }
+
     public function updateUpi(array $input): array
     {
         $deviceUuid = $this->validateDeviceUuid($input['device_uuid'] ?? null);
@@ -123,6 +289,8 @@ final class AuthService
             if ($device === null) {
                 throw new InvalidArgumentException('Device not found.', 404);
             }
+
+            $this->requireOwnerDevice($device);
 
             if (!password_verify($ownerPin, (string) $device['owner_pin_hash'])) {
                 throw new InvalidArgumentException('Invalid owner PIN.', 401);
@@ -172,7 +340,13 @@ final class AuthService
         $pin = $this->validatePin($input['pin'] ?? null);
         $device = $this->findActiveDeviceByUuid($deviceUuid);
 
-        if ($device === null || !password_verify($pin, (string) $device['owner_pin_hash'])) {
+        if ($device === null) {
+            throw new InvalidArgumentException('Invalid device UUID or owner PIN.', 401);
+        }
+
+        $this->requireOwnerDevice($device, 'This device is restricted to user mode and cannot use owner login.');
+
+        if (!password_verify($pin, (string) $device['owner_pin_hash'])) {
             throw new InvalidArgumentException('Invalid device UUID or owner PIN.', 401);
         }
 
@@ -226,6 +400,8 @@ final class AuthService
                 throw new InvalidArgumentException('Device is not active.', 401);
             }
 
+            $this->requireOwnerDevice($device, 'User devices cannot refresh owner sessions.');
+
             $revoke = $this->db->prepare(
                 'UPDATE refresh_tokens
                  SET revoked_at = UTC_TIMESTAMP(),
@@ -272,6 +448,8 @@ final class AuthService
             if ($device === null) {
                 throw new InvalidArgumentException('Registered device not found.', 404);
             }
+
+            $this->requireOwnerDevice($device, 'User devices cannot reset the owner PIN through this endpoint.');
 
             $update = $this->db->prepare(
                 'UPDATE devices
@@ -592,6 +770,43 @@ final class AuthService
         return $hash;
     }
 
+    private function resolveDeviceRole(array $device): string
+    {
+        $role = $device['device_role'] ?? null;
+        if ($role === 'user') {
+            return 'user';
+        }
+
+        return 'owner';
+    }
+
+    private function ownerBindingStatus(array $device, string $role): string
+    {
+        if ($role === 'user') {
+            return $device['owner_device_id'] !== null ? 'bound' : 'unbound';
+        }
+
+        return 'self';
+    }
+
+    private function requireOwnerDevice(array $device, string $message = 'This device is restricted to user mode.'): array
+    {
+        if ($this->resolveDeviceRole($device) !== 'owner') {
+            throw new InvalidArgumentException($message, 403);
+        }
+
+        return $device;
+    }
+
+    private function authoritativeOwnerId(array $device): int
+    {
+        if ($this->resolveDeviceRole($device) === 'user' && $device['owner_device_id'] !== null) {
+            return (int) $device['owner_device_id'];
+        }
+
+        return (int) $device['id'];
+    }
+
     private function serializeDevice(array $device): array
     {
         return [
@@ -601,6 +816,8 @@ final class AuthService
             'platform' => $device['platform'],
             'upi_id' => $device['upi_id'],
             'recovery_phone' => $device['recovery_phone'],
+            'device_role' => $this->resolveDeviceRole($device),
+            'owner_device_id' => $device['owner_device_id'] !== null ? (int) $device['owner_device_id'] : null,
             'is_active' => (bool) $device['is_active'],
             'created_at' => $device['created_at'],
             'updated_at' => $device['updated_at'],

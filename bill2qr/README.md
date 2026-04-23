@@ -1,24 +1,28 @@
 # Bill2QR PHP Auth API
 
-Minimal framework-free PHP API for the backend-owned master credential used by the Bill2QR app.
+Minimal framework-free PHP API for owner-controlled device management in the Bill2QR app.
 
 ## Backend Intent
 
-This backend is intentionally the source of truth only for the device owner/master profile:
+This backend remains intentionally owner-credential-centric:
 
-- `device_uuid` is persisted by the app and sent on every auth call.
-- the backend stores the owner/master PIN only
-- the frontend may keep a separate local user PIN for day-to-day unlock
-- `business_name` remains local to the app in this pass
-- UPI updates stay owner-gated on the backend
+- `device_uuid` is persisted by Android and sent on every relevant call.
+- the backend stores only the owner/master credential.
+- secondary user PIN remains local-only in Android for now.
+- a device can be classified as either:
+  - `owner`: may register, login, reset owner PIN, and update UPI
+  - `user`: permanently restricted from owner setup/login and owner-only mutations
 
-That means the app can support a dual-pin UX without forcing the backend to store a second app-user credential yet.
+This lets the app enforce a dual-experience UX while the backend remains the source of truth for owner identity and device restriction.
 
 ## Setup
 
 1. Copy `.env.example` to `.env` and fill in your MySQL and JWT values.
 2. Run `database/schema.sql` against your MySQL database for a fresh install.
-3. If you already have an older Bill2QR database, apply `database/migrations/20260423_add_owner_pin_hash.sql`.
+3. If you already have an older Bill2QR database, apply:
+   - `database/migrations/20260423_add_upi_and_recovery_phone.sql`
+   - `database/migrations/20260423_add_owner_pin_hash.sql` if your DB still needs it
+   - `database/migrations/20260423_add_device_restriction_fields.sql`
 4. Serve the API with your preferred PHP web server, pointing the document root to `public/`.
 
 Example with PHP's built-in server:
@@ -29,15 +33,89 @@ php -S localhost:8000 -t public
 
 ## Endpoints
 
+- `POST /device/check-eligibility`
 - `POST /auth/register`
 - `POST /auth/login`
+- `POST /device/claim-user`
 - `POST /auth/reset-pin`
 - `POST /auth/update-upi`
 - `POST /auth/refresh`
 - `POST /auth/logout`
 - `GET /auth/me`
 
+## Route Intent
+
+- `POST /device/check-eligibility`
+  - tells Android whether this `device_uuid` should see owner setup, owner login, or user login
+- `POST /auth/register`
+  - registers or updates an owner device only
+  - explicitly rejects user-classified devices
+- `POST /auth/login`
+  - owner-PIN login only
+  - explicitly rejects user-classified devices
+- `POST /device/claim-user`
+  - authenticated owner action
+  - converts another `device_uuid` into a permanently restricted user device bound to that owner
+- `POST /auth/reset-pin`
+  - owner PIN reset only
+  - user-pin forgot flow must remain local-only in Android
+- `POST /auth/update-upi`
+  - owner-only UPI update
+
 ## Request Examples
+
+### Check Device Eligibility
+
+Request:
+
+```json
+{
+  "device_uuid": "android-install-uuid",
+  "platform": "android"
+}
+```
+
+Unknown device response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "setup_allowed": true,
+    "device_role": null,
+    "next_step": "owner_setup",
+    "owner_binding_status": "unbound"
+  }
+}
+```
+
+User device response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "setup_allowed": false,
+    "device_role": "user",
+    "next_step": "user_login",
+    "owner_binding_status": "bound"
+  }
+}
+```
+
+Owner device response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "setup_allowed": false,
+    "device_role": "owner",
+    "next_step": "owner_login",
+    "owner_binding_status": "self"
+  }
+}
+```
 
 ### Register Owner Device
 
@@ -67,6 +145,8 @@ Response:
       "platform": "android",
       "upi_id": "merchant@okaxis",
       "recovery_phone": "9876543210",
+      "device_role": "owner",
+      "owner_device_id": null,
       "is_active": true,
       "created_at": "2026-04-23 05:25:32",
       "updated_at": "2026-04-23 05:25:32",
@@ -106,6 +186,8 @@ Response:
       "platform": "android",
       "upi_id": "merchant@okaxis",
       "recovery_phone": "9876543210",
+      "device_role": "owner",
+      "owner_device_id": null,
       "is_active": true,
       "created_at": "2026-04-23 05:25:32",
       "updated_at": "2026-04-23 05:30:12",
@@ -121,13 +203,16 @@ Response:
 }
 ```
 
-### Refresh
+### Claim Another Device As User
 
 Request:
 
+Send `Authorization: Bearer <owner_access_token>`.
+
 ```json
 {
-  "refresh_token": "your_refresh_token"
+  "device_uuid": "second-device-uuid",
+  "platform": "android"
 }
 ```
 
@@ -137,23 +222,20 @@ Response:
 {
   "success": true,
   "data": {
+    "message": "Device claimed as a restricted user device.",
     "device": {
-      "id": 1,
-      "device_uuid": "android-install-uuid",
+      "id": 2,
+      "device_uuid": "second-device-uuid",
       "device_name": "Teat",
       "platform": "android",
       "upi_id": "merchant@okaxis",
       "recovery_phone": "9876543210",
+      "device_role": "user",
+      "owner_device_id": 1,
       "is_active": true,
-      "created_at": "2026-04-23 05:25:32",
-      "updated_at": "2026-04-23 05:30:12",
-      "last_login_at": "2026-04-23 05:30:12"
-    },
-    "tokens": {
-      "access_token": "ACCESS_TOKEN",
-      "token_type": "Bearer",
-      "expires_in": 900,
-      "refresh_token": "REFRESH_TOKEN"
+      "created_at": "2026-04-23 06:00:00",
+      "updated_at": "2026-04-23 06:00:00",
+      "last_login_at": null
     }
   }
 }
@@ -185,6 +267,8 @@ Response:
       "platform": "android",
       "upi_id": "merchant@okaxis",
       "recovery_phone": "9876543210",
+      "device_role": "owner",
+      "owner_device_id": null,
       "is_active": true,
       "created_at": "2026-04-23 05:25:32",
       "updated_at": "2026-04-23 05:40:00",
@@ -200,7 +284,7 @@ Response:
 }
 ```
 
-The app’s separate user-pin forgot flow should remain local-only for now and should not call this API.
+The app’s separate user-pin forgot flow should remain local-only for now and must not call this API.
 
 ### Update UPI
 
@@ -228,6 +312,8 @@ Response:
       "platform": "android",
       "upi_id": "newmerchant@okicici",
       "recovery_phone": "9876543210",
+      "device_role": "owner",
+      "owner_device_id": null,
       "is_active": true,
       "created_at": "2026-04-23 05:25:32",
       "updated_at": "2026-04-23 05:45:00",
@@ -256,6 +342,8 @@ Response:
       "platform": "android",
       "upi_id": "merchant@okaxis",
       "recovery_phone": "9876543210",
+      "device_role": "owner",
+      "owner_device_id": null,
       "is_active": true,
       "created_at": "2026-04-23 05:25:32",
       "updated_at": "2026-04-23 05:45:00",

@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS devices (
     upi_id VARCHAR(100) NOT NULL,
     recovery_phone VARCHAR(20) NOT NULL,
     owner_pin_hash VARCHAR(255) NOT NULL,
+    device_role VARCHAR(20) NOT NULL DEFAULT 'owner',
+    owner_device_id BIGINT UNSIGNED NULL,
     is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -14,7 +16,12 @@ CREATE TABLE IF NOT EXISTS devices (
     UNIQUE KEY uq_devices_device_uuid (device_uuid),
     KEY idx_devices_upi_id (upi_id),
     KEY idx_devices_recovery_phone (recovery_phone),
-    KEY idx_devices_is_active (is_active)
+    KEY idx_devices_is_active (is_active),
+    KEY idx_devices_role (device_role),
+    KEY idx_devices_owner_device_id (owner_device_id),
+    CONSTRAINT fk_devices_owner_device
+        FOREIGN KEY (owner_device_id) REFERENCES devices(id)
+        ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS refresh_tokens (

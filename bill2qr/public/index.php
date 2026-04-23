@@ -53,8 +53,21 @@ try {
         exit;
     }
 
+    if ($method === 'POST' && $path === '/device/check-eligibility') {
+        $result = $authService->checkEligibility($body);
+        Response::success($result['data'], $result['status']);
+        exit;
+    }
+
     if ($method === 'POST' && $path === '/auth/login') {
         $result = $authService->login($body);
+        Response::success($result['data'], $result['status']);
+        exit;
+    }
+
+    if ($method === 'POST' && $path === '/device/claim-user') {
+        $currentSession = $authService->authenticateBearerToken($authorizationHeader);
+        $result = $authService->claimUserDevice($body, $currentSession['device']);
         Response::success($result['data'], $result['status']);
         exit;
     }
