@@ -65,6 +65,12 @@ try {
         exit;
     }
 
+    if ($method === 'POST' && $path === '/auth/update-upi') {
+        $result = $authService->updateUpi($body);
+        Response::success($result['data'], $result['status']);
+        exit;
+    }
+
     if ($method === 'POST' && $path === '/auth/refresh') {
         $refreshToken = extractRefreshToken($body);
         $result = $authService->refresh($refreshToken);

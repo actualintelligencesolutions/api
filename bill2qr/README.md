@@ -19,6 +19,7 @@ php -S localhost:8000 -t public
 - `POST /auth/register`
 - `POST /auth/login`
 - `POST /auth/reset-pin`
+- `POST /auth/update-upi`
 - `POST /auth/refresh`
 - `POST /auth/logout`
 - `GET /auth/me`
@@ -32,7 +33,9 @@ php -S localhost:8000 -t public
   "device_uuid": "android-install-uuid",
   "pin": "1234",
   "device_name": "Pixel 8",
-  "platform": "android"
+  "platform": "android",
+  "upi_id": "merchant@okaxis",
+  "recovery_phone": "9876543210"
 }
 ```
 
@@ -51,6 +54,16 @@ php -S localhost:8000 -t public
   "device_uuid": "android-install-uuid",
   "current_pin": "1234",
   "new_pin": "5678"
+}
+```
+
+### Update UPI
+
+```json
+{
+  "device_uuid": "android-install-uuid",
+  "recovery_phone": "9876543210",
+  "new_upi_id": "newmerchant@okicici"
 }
 ```
 

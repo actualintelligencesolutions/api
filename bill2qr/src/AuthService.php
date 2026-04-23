@@ -16,6 +16,8 @@ final class AuthService
         $pin = $this->validatePin($input['pin'] ?? null);
         $deviceName = $this->normalizeNullableString($input['device_name'] ?? null, 100);
         $platform = $this->normalizeNullableString($input['platform'] ?? null, 50);
+        $upiId = $this->validateUpiId($input['upi_id'] ?? null);
+        $recoveryPhone = $this->validateRecoveryPhone($input['recovery_phone'] ?? null);
         $pinHash = password_hash($pin, PASSWORD_DEFAULT);
 
         if ($pinHash === false) {
@@ -33,6 +35,8 @@ final class AuthService
                      SET pin_hash = :pin_hash,
                          device_name = :device_name,
                          platform = :platform,
+                         upi_id = :upi_id,
+                         recovery_phone = :recovery_phone,
                          is_active = 1,
                          updated_at = UTC_TIMESTAMP()
                      WHERE id = :id'
@@ -41,6 +45,8 @@ final class AuthService
                     'pin_hash' => $pinHash,
                     'device_name' => $deviceName,
                     'platform' => $platform,
+                    'upi_id' => $upiId,
+                    'recovery_phone' => $recoveryPhone,
                     'id' => $existing['id'],
                 ]);
 
@@ -53,6 +59,8 @@ final class AuthService
                         device_uuid,
                         device_name,
                         platform,
+                        upi_id,
+                        recovery_phone,
                         pin_hash,
                         is_active,
                         created_at,
@@ -61,6 +69,8 @@ final class AuthService
                         :device_uuid,
                         :device_name,
                         :platform,
+                        :upi_id,
+                        :recovery_phone,
                         :pin_hash,
                         1,
                         UTC_TIMESTAMP(),
@@ -71,6 +81,8 @@ final class AuthService
                     'device_uuid' => $deviceUuid,
                     'device_name' => $deviceName,
                     'platform' => $platform,
+                    'upi_id' => $upiId,
+                    'recovery_phone' => $recoveryPhone,
                     'pin_hash' => $pinHash,
                 ]);
 
@@ -91,6 +103,62 @@ final class AuthService
                 'data' => [
                     'device' => $this->serializeDevice($device),
                     'tokens' => $tokenBundle,
+                ],
+            ];
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+
+            throw $e;
+        }
+    }
+
+    public function updateUpi(array $input): array
+    {
+        $deviceUuid = $this->validateDeviceUuid($input['device_uuid'] ?? null);
+        $recoveryPhone = $this->validateRecoveryPhone($input['recovery_phone'] ?? null);
+        $newUpiId = $this->validateUpiId($input['new_upi_id'] ?? null, 'new_upi_id');
+
+        $this->db->beginTransaction();
+
+        try {
+            $device = $this->findActiveDeviceByUuid($deviceUuid, true);
+            if ($device === null) {
+                throw new InvalidArgumentException('Device not found.', 404);
+            }
+
+            if (!hash_equals((string) $device['recovery_phone'], $recoveryPhone)) {
+                throw new InvalidArgumentException('Invalid recovery phone.', 401);
+            }
+
+            if (hash_equals((string) $device['upi_id'], $newUpiId)) {
+                throw new InvalidArgumentException('new_upi_id must be different from current UPI ID.', 422);
+            }
+
+            $update = $this->db->prepare(
+                'UPDATE devices
+                 SET upi_id = :upi_id,
+                     updated_at = UTC_TIMESTAMP()
+                 WHERE id = :id'
+            );
+            $update->execute([
+                'upi_id' => $newUpiId,
+                'id' => $device['id'],
+            ]);
+
+            $freshDevice = $this->findDeviceById((int) $device['id'], true);
+            if ($freshDevice === null) {
+                throw new RuntimeException('Device not found after UPI update.', 500);
+            }
+
+            $this->db->commit();
+
+            return [
+                'status' => 200,
+                'data' => [
+                    'message' => 'UPI ID updated successfully.',
+                    'device' => $this->serializeDevice($freshDevice),
                 ],
             ];
         } catch (Throwable $e) {
@@ -452,6 +520,38 @@ final class AuthService
         return $pin;
     }
 
+    private function validateUpiId(mixed $value, string $field = 'upi_id'): string
+    {
+        if (!is_string($value)) {
+            throw new InvalidArgumentException($field . ' is required.', 422);
+        }
+
+        $upiId = strtolower(trim($value));
+        if ($upiId === '' || strlen($upiId) > 100) {
+            throw new InvalidArgumentException($field . ' must be between 1 and 100 characters.', 422);
+        }
+
+        if (!preg_match('/^[a-z0-9.\-_]{2,}@[a-z]{2,}$/', $upiId)) {
+            throw new InvalidArgumentException($field . ' must be a valid UPI ID.', 422);
+        }
+
+        return $upiId;
+    }
+
+    private function validateRecoveryPhone(mixed $value, string $field = 'recovery_phone'): string
+    {
+        if (!is_string($value) && !is_numeric($value)) {
+            throw new InvalidArgumentException($field . ' is required.', 422);
+        }
+
+        $phone = preg_replace('/\D+/', '', (string) $value);
+        if (!is_string($phone) || strlen($phone) < 10 || strlen($phone) > 15) {
+            throw new InvalidArgumentException($field . ' must be a valid phone number.', 422);
+        }
+
+        return $phone;
+    }
+
     private function normalizeNullableString(mixed $value, int $maxLength): ?string
     {
         if ($value === null) {
@@ -482,6 +582,8 @@ final class AuthService
             'device_uuid' => $device['device_uuid'],
             'device_name' => $device['device_name'],
             'platform' => $device['platform'],
+            'upi_id' => $device['upi_id'],
+            'recovery_phone' => $device['recovery_phone'],
             'is_active' => (bool) $device['is_active'],
             'created_at' => $device['created_at'],
             'updated_at' => $device['updated_at'],
