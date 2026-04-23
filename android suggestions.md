@@ -27,6 +27,7 @@ POST /device/check-eligibility
   - backend says the device is unknown
   - user enters a UPI ID
   - backend confirms that no owner account exists for that UPI
+- If backend says the entered UPI already belongs to an existing account, do not keep the user in owner setup; switch to Add User flow.
 
 ## Backend Contract
 
@@ -128,6 +129,8 @@ If UPI is not linked to any owner account:
 }
 ```
 
+If a new device still submits owner registration with a UPI already used by an existing root owner account, backend rejects the request with a conflict error and frontend should redirect to Add User flow.
+
 ### 3. Verify Owner PIN For User Claim
 
 Request:
@@ -207,6 +210,18 @@ Request:
 }
 ```
 
+If backend rejects this with a message like:
+
+```text
+This UPI ID is already associated with an existing account. Continue with Add User flow on this device instead of creating a new owner setup.
+```
+
+then frontend should:
+
+- show a user-friendly message that this UPI already belongs to an existing account
+- stop owner registration on this device
+- move to owner PIN verification and Add User flow
+
 ## Recommended Android Flow
 
 ### A. Launch on any device
@@ -222,7 +237,7 @@ Request:
 
 1. Show UPI input
 2. Submit to `/device/check-upi-association`
-3. If `association_found = true`, show owner PIN verification screen
+3. If `association_found = true`, do not show owner setup; show owner PIN verification screen
 4. Submit to `/device/verify-owner-for-claim`
 5. If valid, receive `claim_grant`
 6. Call `/device/register-user-device`
@@ -238,9 +253,17 @@ Request:
 2. Submit to `/device/check-upi-association`
 3. If `association_found = false`, show owner setup
 4. Submit owner setup to `/auth/register`
-5. Store returned owner tokens and owner device metadata
+5. If `/auth/register` says the UPI already belongs to an existing account, stop owner setup and switch to Add User flow
+6. Otherwise store returned owner tokens and owner device metadata
 
-### D. Later relaunch on claimed user device
+### D. Duplicate-owner protection
+
+1. A new device must not be allowed to create a new owner account for a UPI already owned by another root owner device
+2. If this happens, backend returns an error and frontend should route to Add User flow
+3. The preferred message is:
+   - `This UPI ID is already associated with an existing account.`
+
+### E. Later relaunch on claimed user device
 
 1. Load `device_uuid`
 2. Call `/device/check-eligibility`
@@ -284,6 +307,9 @@ Requirements:
 - If UPI is not associated with an existing owner account:
   - continue to owner setup
   - call POST /auth/register
+- If POST /auth/register says the UPI already belongs to an existing account:
+  - do not keep the user in owner setup
+  - redirect into Add User flow
 - Map the install-time Name field to backend device_name
 - Keep business_name local-only
 - Keep user_name and user_pin local-only

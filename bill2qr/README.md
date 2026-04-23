@@ -24,6 +24,7 @@ This lets the app enforce a dual-experience UX while the backend remains the sou
    - `database/migrations/20260423_add_owner_pin_hash.sql` if your DB still needs it
    - `database/migrations/20260423_add_device_restriction_fields.sql`
    - `database/migrations/20260423_add_device_claim_grants.sql`
+   - `database/migrations/20260423_add_campaigns.sql`
 4. Serve the API with your preferred PHP web server, pointing the document root to `public/`.
 
 Example with PHP's built-in server:
@@ -38,6 +39,9 @@ php -S localhost:8000 -t public
 - `POST /device/check-upi-association`
 - `POST /device/verify-owner-for-claim`
 - `POST /device/register-user-device`
+- `POST /campaigns/resolve`
+- `GET /campaigns/html`
+- `POST /campaigns/events`
 - `POST /auth/register`
 - `POST /auth/login`
 - `POST /device/claim-user`
@@ -59,6 +63,14 @@ php -S localhost:8000 -t public
   - verifies the owner PIN and returns a short-lived claim grant instead of a full owner session
 - `POST /device/register-user-device`
   - consumes a claim grant and registers the current unknown device as a restricted user device
+- `POST /campaigns/resolve`
+  - resolves the best active campaign for a placement and device context
+  - enforces audience filters, cooldowns, and per-device impression caps
+- `GET /campaigns/html`
+  - serves hosted full-screen HTML for campaigns with `render_mode = hosted_html`
+  - sends a restrictive CSP so the HTML can remain content-focused and low-risk
+- `POST /campaigns/events`
+  - records campaign engagement events such as `impression`, `click`, `dismiss`, and `close`
 - `POST /auth/register`
   - registers or updates an owner device only
   - explicitly rejects user-classified devices
@@ -168,6 +180,8 @@ No owner found response:
 }
 ```
 
+If a new device skips this lookup and tries `/auth/register` with an already-associated UPI anyway, backend rejects the request with a conflict message instructing the client to continue with Add User flow instead of creating another owner account.
+
 ### Verify Owner For Claim
 
 Request:
@@ -202,6 +216,123 @@ Request:
   "device_uuid": "android-install-uuid",
   "platform": "android",
   "claim_grant": "CLAIM_GRANT_TOKEN"
+}
+```
+
+## Campaign Screen V1
+
+This backend now supports an ethical remote campaign screen system for offers and announcements.
+
+Guardrails built into this v1:
+
+- campaigns are scheduled and status-controlled from the database
+- campaigns can target `all`, `owner`, `user`, or `unknown` audiences
+- campaigns can be frequency-capped per device
+- campaigns can be cooled down to avoid repeated interruptions
+- hosted HTML is delivered only from this backend and served with a restrictive CSP
+- engagement tracking is explicit and limited to campaign events
+
+Recommended usage:
+
+- use `render_mode = native_json` for most campaigns
+- use `render_mode = hosted_html` only when a richer full-screen layout is genuinely needed
+- avoid showing campaign screens in critical task flows such as payment confirmation
+
+### Resolve Active Campaign
+
+Request:
+
+```json
+{
+  "device_uuid": "android-install-uuid",
+  "placement": "app_open"
+}
+```
+
+No campaign response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "has_campaign": false,
+    "placement": "app_open"
+  }
+}
+```
+
+Hosted HTML campaign response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "has_campaign": true,
+    "placement": "app_open",
+    "campaign": {
+      "campaign_key": "summer-offer-2026",
+      "name": "Summer Offer",
+      "campaign_type": "offer",
+      "placement": "app_open",
+      "render_mode": "hosted_html",
+      "screen_type": "full_screen",
+      "is_dismissible": true,
+      "priority": 100,
+      "device_context": {
+        "device_known": true,
+        "device_role": "owner"
+      },
+      "content": {
+        "title": "Festival Offer",
+        "subtitle": "Flat discount this week",
+        "body": "Show this only when relevant.",
+        "primary_cta": {
+          "cta_id": "primary",
+          "label": "Learn More",
+          "action_url": "https://example.com/offer"
+        },
+        "secondary_cta": null,
+        "theme": {
+          "background": "#111111",
+          "foreground": "#ffffff"
+        },
+        "payload": null,
+        "html_url": "https://api.actualintelligencesolutions.in/bill2qr/campaigns/html?campaign_key=summer-offer-2026&device_uuid=android-install-uuid"
+      },
+      "tracking": {
+        "campaign_key": "summer-offer-2026",
+        "track_endpoint": "/campaigns/events"
+      }
+    }
+  }
+}
+```
+
+### Track Campaign Event
+
+Request:
+
+```json
+{
+  "campaign_key": "summer-offer-2026",
+  "device_uuid": "android-install-uuid",
+  "event_type": "impression",
+  "cta_id": null,
+  "dwell_time_ms": 0,
+  "metadata": {
+    "placement": "app_open"
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "message": "Campaign event tracked."
+  }
 }
 ```
 
@@ -243,6 +374,15 @@ Request:
   "recovery_phone": "9876543210",
   "owner_pin": "4321"
 }
+```
+
+Important:
+
+- owner registration is allowed only when the entered `upi_id` is not already associated with another active root owner device
+- if a different root owner already owns that `upi_id`, backend returns `409` with this message:
+
+```text
+This UPI ID is already associated with an existing account. Continue with Add User flow on this device instead of creating a new owner setup.
 ```
 
 Response:

@@ -11,6 +11,7 @@ require_once $rootPath . '/config/db.php';
 require_once $rootPath . '/src/Response.php';
 require_once $rootPath . '/src/TokenService.php';
 require_once $rootPath . '/src/AuthService.php';
+require_once $rootPath . '/src/CampaignService.php';
 
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
@@ -32,6 +33,7 @@ set_exception_handler(static function (Throwable $exception): void {
 
 try {
     $authService = new AuthService(Database::connection(), new TokenService());
+    $campaignService = new CampaignService(Database::connection());
 
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $requestUri = $_SERVER['REQUEST_URI'] ?? '/';
@@ -44,6 +46,27 @@ try {
             'name' => 'Bill2QR Auth API',
             'status' => 'ok',
         ]);
+        exit;
+    }
+
+    if ($method === 'POST' && $path === '/campaigns/resolve') {
+        $result = $campaignService->resolveActiveCampaign($body);
+        Response::success($result['data'], $result['status']);
+        exit;
+    }
+
+    if ($method === 'POST' && $path === '/campaigns/events') {
+        $result = $campaignService->trackEvent($body);
+        Response::success($result['data'], $result['status']);
+        exit;
+    }
+
+    if ($method === 'GET' && $path === '/campaigns/html') {
+        $result = $campaignService->renderHostedHtml(
+            getQueryParam('campaign_key'),
+            getQueryParam('device_uuid')
+        );
+        sendHtml($result['html'], $result['status']);
         exit;
     }
 
@@ -199,4 +222,36 @@ function extractRefreshToken(array $body): ?string
     }
 
     return null;
+}
+
+function getQueryParam(string $name, bool $required = true): ?string
+{
+    $value = $_GET[$name] ?? null;
+    if ($value === null) {
+        if ($required) {
+            throw new InvalidArgumentException($name . ' is required.', 422);
+        }
+
+        return null;
+    }
+
+    if (!is_string($value)) {
+        throw new InvalidArgumentException($name . ' must be a string.', 422);
+    }
+
+    $normalized = trim($value);
+    if ($normalized === '' && $required) {
+        throw new InvalidArgumentException($name . ' is required.', 422);
+    }
+
+    return $normalized === '' ? null : $normalized;
+}
+
+function sendHtml(string $html, int $status = 200): void
+{
+    http_response_code($status);
+    header('Content-Type: text/html; charset=utf-8');
+    header("Content-Security-Policy: default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; font-src https: data:; script-src 'none'; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+
+    echo $html;
 }

@@ -282,6 +282,14 @@ final class AuthService
                 throw new InvalidArgumentException('This device is restricted to user mode and cannot create or modify owner setup.', 403);
             }
 
+            $existingOwnerForUpi = $this->findOwnerRootByUpi($upiId, true);
+            if ($existingOwnerForUpi !== null && ($existing === null || (int) $existingOwnerForUpi['id'] !== (int) $existing['id'])) {
+                throw new InvalidArgumentException(
+                    'This UPI ID is already associated with an existing account. Continue with Add User flow on this device instead of creating a new owner setup.',
+                    409
+                );
+            }
+
             if ($existing !== null) {
                 $update = $this->db->prepare(
                     'UPDATE devices

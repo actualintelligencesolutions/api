@@ -57,3 +57,55 @@ CREATE TABLE IF NOT EXISTS device_claim_grants (
         FOREIGN KEY (owner_device_id) REFERENCES devices(id)
         ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS campaigns (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    campaign_key VARCHAR(100) NOT NULL,
+    name VARCHAR(150) NOT NULL,
+    campaign_type VARCHAR(30) NOT NULL DEFAULT 'announcement',
+    status VARCHAR(20) NOT NULL DEFAULT 'draft',
+    render_mode VARCHAR(20) NOT NULL DEFAULT 'native_json',
+    screen_type VARCHAR(20) NOT NULL DEFAULT 'full_screen',
+    placement VARCHAR(50) NOT NULL DEFAULT 'app_open',
+    audience_role VARCHAR(20) NOT NULL DEFAULT 'all',
+    title VARCHAR(150) NOT NULL,
+    subtitle VARCHAR(255) NULL,
+    body_text TEXT NULL,
+    primary_cta_label VARCHAR(80) NULL,
+    primary_cta_url VARCHAR(255) NULL,
+    secondary_cta_label VARCHAR(80) NULL,
+    secondary_cta_url VARCHAR(255) NULL,
+    theme_json JSON NULL,
+    payload_json JSON NULL,
+    html_body MEDIUMTEXT NULL,
+    is_dismissible TINYINT(1) NOT NULL DEFAULT 1,
+    priority INT NOT NULL DEFAULT 0,
+    max_impressions_per_device INT NULL,
+    cooldown_minutes INT NULL,
+    start_at DATETIME NOT NULL,
+    end_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_campaigns_campaign_key (campaign_key),
+    KEY idx_campaigns_delivery (status, placement, start_at, end_at, priority),
+    KEY idx_campaigns_audience (audience_role, render_mode)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS campaign_events (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    campaign_id BIGINT UNSIGNED NOT NULL,
+    device_uuid VARCHAR(191) NOT NULL,
+    event_type VARCHAR(30) NOT NULL,
+    cta_id VARCHAR(50) NULL,
+    dwell_time_ms INT NULL,
+    metadata_json JSON NULL,
+    occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_campaign_events_lookup (campaign_id, device_uuid, event_type, occurred_at),
+    KEY idx_campaign_events_device (device_uuid, occurred_at),
+    CONSTRAINT fk_campaign_events_campaign
+        FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
