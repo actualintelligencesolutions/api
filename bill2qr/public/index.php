@@ -35,8 +35,7 @@ try {
 
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $requestUri = $_SERVER['REQUEST_URI'] ?? '/';
-    $path = parse_url($requestUri, PHP_URL_PATH) ?: '/';
-    $path = rtrim($path, '/') ?: '/';
+    $path = normalizeRequestPath($requestUri);
     $body = getJsonInput();
     $authorizationHeader = getAuthorizationHeader();
 
@@ -130,6 +129,24 @@ function getAuthorizationHeader(): ?string
     }
 
     return null;
+}
+
+function normalizeRequestPath(string $requestUri): string
+{
+    $path = parse_url($requestUri, PHP_URL_PATH) ?: '/';
+    $basePath = parse_url((string) env('APP_URL', ''), PHP_URL_PATH);
+
+    if (is_string($basePath)) {
+        $basePath = rtrim($basePath, '/');
+
+        if ($basePath !== '' && str_starts_with($path, $basePath)) {
+            $path = substr($path, strlen($basePath)) ?: '/';
+        }
+    }
+
+    $path = rtrim($path, '/');
+
+    return $path === '' ? '/' : $path;
 }
 
 function extractRefreshToken(array $body): ?string
