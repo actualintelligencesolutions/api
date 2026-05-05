@@ -25,6 +25,7 @@ This lets the app enforce a dual-experience UX while the backend remains the sou
    - `database/migrations/20260423_add_device_restriction_fields.sql`
    - `database/migrations/20260423_add_device_claim_grants.sql`
    - `database/migrations/20260423_add_campaigns.sql`
+   - `database/migrations/20260505_add_deletion_requests.sql`
 4. Serve the API with your preferred PHP web server, pointing the document root to `public/`.
 
 Example with PHP's built-in server:
@@ -50,6 +51,10 @@ php -S localhost:8000 -t public
 - `POST /auth/refresh`
 - `POST /auth/logout`
 - `GET /auth/me`
+- `GET /account-deletion`
+- `POST /account-deletion/requests`
+- `GET /account-deletion/admin`
+- `POST /account-deletion/admin/review`
 
 ## Route Intent
 
@@ -85,6 +90,16 @@ php -S localhost:8000 -t public
   - user-pin forgot flow must remain local-only in Android
 - `POST /auth/update-upi`
   - owner-only UPI update
+- `GET /account-deletion`
+  - public HTML page for the Google Play account deletion URL
+  - explains deletion steps, data deleted, retained audit data, and retention period
+- `POST /account-deletion/requests`
+  - accepts public deletion requests for either full account deletion or activity-history-only deletion
+  - supports HTML form posts and JSON requests
+- `GET /account-deletion/admin`
+  - protected admin review page for pending and completed deletion requests
+- `POST /account-deletion/admin/review`
+  - protected admin action endpoint for approve, reject, and complete actions
 
 ## Request Examples
 
@@ -237,6 +252,28 @@ Recommended usage:
 - use `render_mode = native_json` for most campaigns
 - use `render_mode = hosted_html` only when a richer full-screen layout is genuinely needed
 - avoid showing campaign screens in critical task flows such as payment confirmation
+
+## Account Deletion URL
+
+This backend now includes a public account deletion workflow suitable for a Google Play store listing.
+
+Configuration:
+
+- `ACCOUNT_DELETION_AUDIT_RETENTION_DAYS`
+  - number of days minimal audit metadata is retained after full deletion completion
+- `ACCOUNT_DELETION_ADMIN_TOKEN`
+  - shared secret for the admin review path
+  - supported via HTTP Basic auth password or Bearer token
+- `ACCOUNT_DELETION_SUPPORT_CONTACT`
+  - optional text shown on the public deletion page
+
+Deletion behavior:
+
+- `account_delete`
+  - deletes the root owner account, linked user-device records, refresh tokens, claim grants, and campaign/activity history
+- `activity_delete`
+  - deletes campaign/activity history only and leaves the account active
+- after completion, the `deletion_requests` row is minimized into an audit record by masking identifiers, hashing identifiers, and clearing the public notes field
 
 ### Resolve Active Campaign
 

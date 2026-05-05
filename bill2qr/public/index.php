@@ -12,6 +12,7 @@ require_once $rootPath . '/src/Response.php';
 require_once $rootPath . '/src/TokenService.php';
 require_once $rootPath . '/src/AuthService.php';
 require_once $rootPath . '/src/CampaignService.php';
+require_once $rootPath . '/src/AccountDeletionService.php';
 
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
@@ -34,11 +35,16 @@ set_exception_handler(static function (Throwable $exception): void {
 try {
     $authService = new AuthService(Database::connection(), new TokenService());
     $campaignService = new CampaignService(Database::connection());
+    $accountDeletionService = new AccountDeletionService(
+        Database::connection(),
+        max(1, (int) env('ACCOUNT_DELETION_AUDIT_RETENTION_DAYS', '90'))
+    );
 
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $requestUri = $_SERVER['REQUEST_URI'] ?? '/';
     $path = normalizeRequestPath($requestUri);
     $body = getJsonInput();
+    $requestInput = getRequestInput($body);
     $authorizationHeader = getAuthorizationHeader();
 
     if ($method === 'GET' && $path === '/') {
@@ -46,6 +52,87 @@ try {
             'name' => 'Bill2QR Auth API',
             'status' => 'ok',
         ]);
+        exit;
+    }
+
+    if ($method === 'GET' && $path === '/account-deletion') {
+        $result = $accountDeletionService->renderPublicPage();
+        sendHtml($result['html'], $result['status'], [], accountDeletionContentSecurityPolicy());
+        exit;
+    }
+
+    if ($method === 'POST' && $path === '/account-deletion/requests') {
+        try {
+            $result = $accountDeletionService->createRequest($requestInput);
+        } catch (InvalidArgumentException $exception) {
+            if (clientPrefersJson()) {
+                Response::error($exception->getMessage(), resolveExceptionStatus($exception));
+                exit;
+            }
+
+            $page = $accountDeletionService->renderPublicPage(
+                $requestInput,
+                [$exception->getMessage()]
+            );
+            sendHtml($page['html'], resolveExceptionStatus($exception), [], accountDeletionContentSecurityPolicy());
+            exit;
+        }
+
+        if (clientPrefersJson()) {
+            Response::success($result['data'], $result['status']);
+            exit;
+        }
+
+        $page = $accountDeletionService->renderPublicPage(
+            $requestInput,
+            [],
+            $result['data']
+        );
+        sendHtml($page['html'], $page['status'], [], accountDeletionContentSecurityPolicy());
+        exit;
+    }
+
+    if ($method === 'GET' && $path === '/account-deletion/admin') {
+        if (!$accountDeletionService->isAdminAuthorized($authorizationHeader)) {
+            sendAdminUnauthorized(clientPrefersJson());
+            exit;
+        }
+
+        $result = $accountDeletionService->renderAdminPage(getQueryParam('message', false));
+        sendHtml($result['html'], $result['status'], [], accountDeletionContentSecurityPolicy());
+        exit;
+    }
+
+    if ($method === 'POST' && $path === '/account-deletion/admin/review') {
+        if (!$accountDeletionService->isAdminAuthorized($authorizationHeader)) {
+            sendAdminUnauthorized(clientPrefersJson());
+            exit;
+        }
+
+        try {
+            $result = $accountDeletionService->reviewRequest($requestInput);
+        } catch (Throwable $exception) {
+            if (clientPrefersJson()) {
+                Response::error($exception->getMessage(), resolveExceptionStatus($exception));
+                exit;
+            }
+
+            $redirectUrl = buildPathWithQuery('/account-deletion/admin', [
+                'message' => $exception->getMessage(),
+            ]);
+            header('Location: ' . $redirectUrl, true, 303);
+            exit;
+        }
+
+        if (clientPrefersJson()) {
+            Response::success($result['data'], $result['status']);
+            exit;
+        }
+
+        $redirectUrl = buildPathWithQuery('/account-deletion/admin', [
+            'message' => $result['data']['message'] ?? 'Review action completed.',
+        ]);
+        header('Location: ' . $redirectUrl, true, 303);
         exit;
     }
 
@@ -168,6 +255,11 @@ try {
 
 function getJsonInput(): array
 {
+    $contentType = $_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '';
+    if (!is_string($contentType) || stripos($contentType, 'application/json') === false) {
+        return [];
+    }
+
     $rawBody = file_get_contents('php://input');
     if ($rawBody === false || trim($rawBody) === '') {
         return [];
@@ -179,6 +271,19 @@ function getJsonInput(): array
     }
 
     return $decoded;
+}
+
+function getRequestInput(array $jsonBody): array
+{
+    if ($jsonBody !== []) {
+        return $jsonBody;
+    }
+
+    if ($_POST !== []) {
+        return $_POST;
+    }
+
+    return [];
 }
 
 function getAuthorizationHeader(): ?string
@@ -247,11 +352,71 @@ function getQueryParam(string $name, bool $required = true): ?string
     return $normalized === '' ? null : $normalized;
 }
 
-function sendHtml(string $html, int $status = 200): void
+function sendHtml(string $html, int $status = 200, array $headers = [], ?string $contentSecurityPolicy = null): void
 {
     http_response_code($status);
     header('Content-Type: text/html; charset=utf-8');
-    header("Content-Security-Policy: default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; font-src https: data:; script-src 'none'; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+    header('Content-Security-Policy: ' . ($contentSecurityPolicy ?? defaultHtmlContentSecurityPolicy()));
+    foreach ($headers as $headerLine) {
+        header($headerLine);
+    }
 
     echo $html;
+}
+
+function clientPrefersJson(): bool
+{
+    $accept = $_SERVER['HTTP_ACCEPT'] ?? '';
+    if (is_string($accept) && stripos($accept, 'application/json') !== false) {
+        return true;
+    }
+
+    $contentType = $_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '';
+    return is_string($contentType) && stripos($contentType, 'application/json') !== false;
+}
+
+function resolveExceptionStatus(Throwable $exception): int
+{
+    $statusCode = $exception->getCode();
+    if (!is_int($statusCode) || $statusCode < 100 || $statusCode > 599) {
+        return 500;
+    }
+
+    return $statusCode;
+}
+
+function sendAdminUnauthorized(bool $json): void
+{
+    $header = 'WWW-Authenticate: Basic realm="Bill2QR Account Deletion Admin"';
+
+    if ($json) {
+        header($header);
+        Response::error('Admin authorization is required.', 401);
+        return;
+    }
+
+    sendHtml(
+        '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Unauthorized</title></head><body><h1>401 Unauthorized</h1><p>Admin authorization is required.</p></body></html>',
+        401,
+        [$header]
+    );
+}
+
+function buildPathWithQuery(string $path, array $query): string
+{
+    $basePath = parse_url((string) env('APP_URL', ''), PHP_URL_PATH);
+    $prefix = is_string($basePath) ? rtrim($basePath, '/') : '';
+    $queryString = http_build_query($query);
+
+    return $prefix . $path . ($queryString !== '' ? '?' . $queryString : '');
+}
+
+function defaultHtmlContentSecurityPolicy(): string
+{
+    return "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; font-src https: data:; script-src 'none'; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+}
+
+function accountDeletionContentSecurityPolicy(): string
+{
+    return "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; font-src https: data:; script-src 'none'; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 }
