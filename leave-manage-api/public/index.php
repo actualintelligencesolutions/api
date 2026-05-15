@@ -23,6 +23,11 @@ require_once $rootPath . '/src/CompOffService.php';
 require_once $rootPath . '/src/LeaveService.php';
 require_once $rootPath . '/src/ApprovalService.php';
 require_once $rootPath . '/src/DashboardService.php';
+require_once $rootPath . '/src/ImportService.php';
+
+if (session_status() !== PHP_SESSION_ACTIVE) {
+    session_start();
+}
 
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
@@ -55,6 +60,7 @@ try {
     $leaveService = new LeaveService($db, $leaveBalanceService, $compOffService);
     $approvalService = new ApprovalService($db, $leaveService, $leaveBalanceService, $compOffService);
     $dashboardService = new DashboardService($db, $leaveBalanceService, $leaveService);
+    $importService = new ImportService($db);
 
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $path = Request::normalizedPath($_SERVER['REQUEST_URI'] ?? '/');
@@ -92,6 +98,7 @@ try {
         '/api/v1/admin/leave-balances',
         '/api/v1/admin/leave-balances/adjust',
         '/api/v1/admin/comp-off',
+        '/api/v1/admin/bootstrap-import',
     ];
 
     if (
@@ -101,6 +108,11 @@ try {
         || in_array($path, $protectedRoutes, true)
     ) {
         $currentSession = $authService->authenticateBearerToken($authorizationHeader);
+    }
+
+    if ($path === '/admin/bootstrap-import') {
+        handleBootstrapImportPage($authService, $importService);
+        exit;
     }
 
     if ($method === 'POST' && $path === '/api/v1/auth/login') {
@@ -398,6 +410,17 @@ try {
         exit;
     }
 
+    if ($method === 'POST' && $path === '/api/v1/admin/bootstrap-import') {
+        $payload = resolveImportPayload($input, $importService);
+        $result = $importService->importBootstrapPayload(
+            $currentSession['user'],
+            $payload['payload'],
+            $payload['source_name']
+        );
+        Response::success($result['data'], $result['status']);
+        exit;
+    }
+
     if (preg_match('#^/api/v1/admin/comp-off/(\d+)$#', $path, $matches)) {
         $creditId = (int) $matches[1];
         if ($method === 'GET') {
@@ -425,4 +448,274 @@ try {
             ? $exception->getCode()
             : 500
     );
+}
+
+function resolveImportPayload(array $input, ImportService $importService): array
+{
+    if (isset($_FILES['import_file']) && is_array($_FILES['import_file'])) {
+        return $importService->parseUploadedJsonFile($_FILES['import_file']);
+    }
+
+    if (isset($input['payload']) && is_array($input['payload'])) {
+        return [
+            'source_name' => 'request-payload',
+            'payload' => $input['payload'],
+        ];
+    }
+
+    throw new InvalidArgumentException('Import payload is required. Upload import_file or send payload JSON.', 422);
+}
+
+function handleBootstrapImportPage(AuthService $authService, ImportService $importService): void
+{
+    $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+    $errors = [];
+    $result = null;
+    $sessionUser = null;
+
+    if (isset($_SESSION['leave_manage_super_admin_id'])) {
+        $sessionUser = authServiceSessionUser((int) $_SESSION['leave_manage_super_admin_id']);
+        if ($sessionUser === null || $sessionUser['role'] !== 'super_admin' || $sessionUser['status'] !== 'active') {
+            unset($_SESSION['leave_manage_super_admin_id']);
+            $sessionUser = null;
+        }
+    }
+
+    if ($method === 'POST') {
+        $action = $_POST['action'] ?? '';
+        if ($action === 'logout') {
+            unset($_SESSION['leave_manage_super_admin_id']);
+            header('Location: ' . buildLocalPath('/admin/bootstrap-import'), true, 303);
+            exit;
+        }
+
+        if ($action === 'login') {
+            try {
+                $login = $authService->login([
+                    'mobile' => $_POST['mobile'] ?? null,
+                    'pin' => $_POST['pin'] ?? null,
+                    'device_uuid' => 'php-bootstrap-import-page',
+                ]);
+                $user = $login['data']['user'];
+                if (($user['role'] ?? null) !== 'super_admin') {
+                    throw new RuntimeException('Only super_admin users can access the bootstrap import page.', 403);
+                }
+
+                $_SESSION['leave_manage_super_admin_id'] = $user['id'];
+                header('Location: ' . buildLocalPath('/admin/bootstrap-import'), true, 303);
+                exit;
+            } catch (Throwable $exception) {
+                $errors[] = $exception->getMessage();
+            }
+        }
+
+        if ($action === 'import') {
+            if ($sessionUser === null) {
+                $errors[] = 'Please log in as a super_admin first.';
+            } else {
+                try {
+                    $payload = $importService->parseUploadedJsonFile($_FILES['import_file'] ?? []);
+                    $import = $importService->importBootstrapPayload(
+                        $sessionUser,
+                        $payload['payload'],
+                        $payload['source_name']
+                    );
+                    $result = $import['data'];
+                } catch (Throwable $exception) {
+                    $errors[] = $exception->getMessage();
+                }
+            }
+        }
+    }
+
+    $html = renderBootstrapImportPage($sessionUser, $errors, $result);
+    sendHtml($html);
+}
+
+function authServiceSessionUser(int $userId): ?array
+{
+    $stmt = Database::connection()->prepare(
+        'SELECT u.*,
+                d.name AS department_name,
+                g.name AS designation_name,
+                ag.name AS approver_group_name
+         FROM users u
+         LEFT JOIN departments d ON d.id = u.department_id
+         LEFT JOIN designations g ON g.id = u.designation_id
+         LEFT JOIN approver_groups ag ON ag.id = u.approver_group_id
+         WHERE u.id = :id
+         LIMIT 1'
+    );
+    $stmt->execute(['id' => $userId]);
+    $user = $stmt->fetch();
+
+    return is_array($user) ? $user : null;
+}
+
+function sendHtml(string $html, int $status = 200): void
+{
+    http_response_code($status);
+    header('Content-Type: text/html; charset=utf-8');
+    echo $html;
+}
+
+function buildLocalPath(string $path): string
+{
+    $basePath = parse_url((string) env('APP_URL', ''), PHP_URL_PATH);
+    $prefix = is_string($basePath) ? rtrim($basePath, '/') : '';
+    return $prefix . $path;
+}
+
+function renderBootstrapImportPage(?array $sessionUser, array $errors, ?array $result): string
+{
+    $isLoggedIn = $sessionUser !== null;
+    $pageTitle = 'Leave Manage Bootstrap Import';
+    $escapedTitle = htmlspecialchars($pageTitle, ENT_QUOTES, 'UTF-8');
+    $loginPanel = renderBootstrapLoginPanel($errors);
+    $importPanel = renderBootstrapImportPanel($sessionUser, $errors, $result);
+
+    return '<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>' . $escapedTitle . '</title>
+    <style>
+        body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f4f6f8;color:#16202a}
+        .page{max-width:920px;margin:0 auto;padding:32px 20px 60px}
+        .card{background:#fff;border-radius:16px;padding:24px;box-shadow:0 12px 30px rgba(0,0,0,.08);margin-bottom:20px}
+        h1,h2,h3{margin:0 0 12px}
+        p{line-height:1.5}
+        label{display:block;font-weight:600;margin:14px 0 6px}
+        input[type="text"],input[type="password"],input[type="file"],textarea{width:100%;padding:12px 14px;border:1px solid #cfd7df;border-radius:10px;box-sizing:border-box}
+        button{border:0;border-radius:10px;padding:12px 18px;font-weight:700;cursor:pointer;background:#0b6bcb;color:#fff}
+        button.secondary{background:#5b6770}
+        .row{display:flex;gap:12px;flex-wrap:wrap}
+        .row > *{flex:1 1 240px}
+        .error{background:#fff2f2;color:#8a1f1f;border:1px solid #f1b7b7;padding:12px 14px;border-radius:10px;margin:0 0 12px}
+        .success{background:#eef9f0;color:#1f6b2b;border:1px solid #b7e0bd;padding:12px 14px;border-radius:10px;margin:0 0 12px}
+        .muted{color:#5b6770}
+        pre{background:#0f1720;color:#e6edf3;padding:16px;border-radius:12px;overflow:auto;font-size:13px}
+        .topbar{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}
+        .badge{display:inline-block;padding:6px 10px;border-radius:999px;background:#e8f1fb;color:#0b4d92;font-weight:700;font-size:12px}
+    </style>
+</head>
+<body>
+    <div class="page">
+        <div class="card">
+            <div class="topbar">
+                <div>
+                    <h1>' . $escapedTitle . '</h1>
+                    <p class="muted">Upload one JSON file to initialize or refresh departments, designations, approver groups, users, leave types, holidays, and opening balances.</p>
+                </div>
+                ' . ($isLoggedIn ? '<span class="badge">Logged in as ' . htmlspecialchars((string) $sessionUser['full_name'], ENT_QUOTES, 'UTF-8') . '</span>' : '') . '
+            </div>
+        </div>
+        ' . ($isLoggedIn ? $importPanel : $loginPanel) . '
+        <div class="card">
+            <h2>Expected JSON Shape</h2>
+            <p class="muted">Every section is optional, but when present it must be an array of objects.</p>
+            <pre>{
+  "departments": [{"code":"HR","name":"Human Resources","status":"active"}],
+  "designations": [{"code":"MGR","name":"Manager","status":"active"}],
+  "approver_groups": [{
+    "code":"BLR-ADMINS",
+    "name":"Bangalore Admins",
+    "description":"Primary Bangalore approvers",
+    "status":"active",
+    "members":[{"employee_code":"EMP100","member_role":"primary","status":"active"}]
+  }],
+  "users": [{
+    "employee_code":"EMP100",
+    "full_name":"Jane Doe",
+    "mobile":"9876543210",
+    "email":"jane@example.com",
+    "role":"super_admin",
+    "pin":"1234",
+    "status":"active",
+    "department_code":"HR",
+    "designation_code":"MGR",
+    "approver_group_code":"BLR-ADMINS",
+    "joining_date":"2026-05-15"
+  }],
+  "leave_types": [{
+    "code":"CL",
+    "name":"Casual Leave",
+    "yearly_quota":12,
+    "carry_forward_allowed":0,
+    "max_carry_forward":0,
+    "requires_approval":1,
+    "allow_comp_off":0,
+    "status":"active"
+  }],
+  "holidays": [{"holiday_date":"2026-08-15","name":"Independence Day","holiday_type":"public","is_optional":0}],
+  "leave_balances": [{"employee_code":"EMP100","leave_type_code":"CL","period_year":2026,"opening_balance":12,"credited_balance":0,"used_balance":0,"pending_balance":0}]
+}</pre>
+        </div>
+    </div>
+</body>
+</html>';
+}
+
+function renderBootstrapLoginPanel(array $errors): string
+{
+    $errorHtml = renderErrorMessages($errors);
+    return '<div class="card">
+        <h2>Super Admin Login</h2>
+        <p class="muted">Log in with the same mobile number and PIN you use for the API.</p>
+        ' . $errorHtml . '
+        <form method="post" action="">
+            <input type="hidden" name="action" value="login">
+            <label for="mobile">Mobile</label>
+            <input id="mobile" name="mobile" type="text" inputmode="numeric" autocomplete="username">
+            <label for="pin">PIN</label>
+            <input id="pin" name="pin" type="password" inputmode="numeric" autocomplete="current-password">
+            <div style="margin-top:18px"><button type="submit">Log In</button></div>
+        </form>
+    </div>';
+}
+
+function renderBootstrapImportPanel(?array $sessionUser, array $errors, ?array $result): string
+{
+    $errorHtml = renderErrorMessages($errors);
+    $successHtml = '';
+    if ($result !== null) {
+        $successHtml = '<div class="success"><strong>' . htmlspecialchars((string) ($result['message'] ?? 'Import completed.'), ENT_QUOTES, 'UTF-8') . '</strong><br><small>Run ID: ' . htmlspecialchars((string) ($result['import_run_id'] ?? ''), ENT_QUOTES, 'UTF-8') . '</small></div><pre>' . htmlspecialchars((string) json_encode($result['summary'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES), ENT_QUOTES, 'UTF-8') . '</pre>';
+    }
+
+    return '<div class="card">
+        <div class="topbar">
+            <div>
+                <h2>Upload Bootstrap JSON</h2>
+                <p class="muted">Signed in as ' . htmlspecialchars((string) ($sessionUser['full_name'] ?? 'Unknown user'), ENT_QUOTES, 'UTF-8') . '.</p>
+            </div>
+            <form method="post" action="">
+                <input type="hidden" name="action" value="logout">
+                <button class="secondary" type="submit">Log Out</button>
+            </form>
+        </div>
+        ' . $errorHtml . '
+        ' . $successHtml . '
+        <form method="post" action="" enctype="multipart/form-data">
+            <input type="hidden" name="action" value="import">
+            <label for="import_file">JSON file</label>
+            <input id="import_file" name="import_file" type="file" accept=".json,application/json" required>
+            <p class="muted">The import runs inside one database transaction. If any row is invalid, the whole import is rolled back.</p>
+            <div style="margin-top:18px"><button type="submit">Upload And Import</button></div>
+        </form>
+    </div>';
+}
+
+function renderErrorMessages(array $errors): string
+{
+    if ($errors === []) {
+        return '';
+    }
+
+    $html = '';
+    foreach ($errors as $error) {
+        $html .= '<div class="error">' . htmlspecialchars((string) $error, ENT_QUOTES, 'UTF-8') . '</div>';
+    }
+
+    return $html;
 }

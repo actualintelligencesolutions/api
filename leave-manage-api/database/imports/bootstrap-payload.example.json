@@ -1,0 +1,112 @@
+{
+  "departments": [
+    {
+      "code": "HR",
+      "name": "Human Resources",
+      "status": "active"
+    },
+    {
+      "code": "OPS",
+      "name": "Operations",
+      "status": "active"
+    }
+  ],
+  "designations": [
+    {
+      "code": "MGR",
+      "name": "Manager",
+      "status": "active"
+    },
+    {
+      "code": "EXEC",
+      "name": "Executive",
+      "status": "active"
+    }
+  ],
+  "approver_groups": [
+    {
+      "code": "BLR-ADMINS",
+      "name": "Bangalore Admins",
+      "description": "Primary Bangalore approver group",
+      "status": "active",
+      "members": [
+        {
+          "employee_code": "EMP100",
+          "member_role": "primary",
+          "status": "active"
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "employee_code": "EMP100",
+      "full_name": "Jane Doe",
+      "mobile": "9876543210",
+      "email": "jane@example.com",
+      "role": "super_admin",
+      "pin": "1234",
+      "status": "active",
+      "department_code": "HR",
+      "designation_code": "MGR",
+      "approver_group_code": "BLR-ADMINS",
+      "joining_date": "2026-05-15"
+    },
+    {
+      "employee_code": "EMP200",
+      "full_name": "John Smith",
+      "mobile": "9876543211",
+      "email": "john@example.com",
+      "role": "staff",
+      "pin": "1234",
+      "status": "active",
+      "department_code": "OPS",
+      "designation_code": "EXEC",
+      "approver_group_code": "BLR-ADMINS",
+      "joining_date": "2026-05-15"
+    }
+  ],
+  "leave_types": [
+    {
+      "code": "CL",
+      "name": "Casual Leave",
+      "description": "General short leave",
+      "unit": "day",
+      "yearly_quota": 12,
+      "carry_forward_allowed": 0,
+      "max_carry_forward": 0,
+      "requires_approval": 1,
+      "allow_comp_off": 0,
+      "status": "active"
+    }
+  ],
+  "holidays": [
+    {
+      "holiday_date": "2026-08-15",
+      "name": "Independence Day",
+      "holiday_type": "public",
+      "location_code": null,
+      "is_optional": 0
+    }
+  ],
+  "leave_balances": [
+    {
+      "employee_code": "EMP100",
+      "leave_type_code": "CL",
+      "period_year": 2026,
+      "opening_balance": 12,
+      "credited_balance": 0,
+      "used_balance": 0,
+      "pending_balance": 0
+    },
+    {
+      "employee_code": "EMP200",
+      "leave_type_code": "CL",
+      "period_year": 2026,
+      "opening_balance": 12,
+      "credited_balance": 0,
+      "used_balance": 0,
+      "pending_balance": 0
+    }
+  ]
+}

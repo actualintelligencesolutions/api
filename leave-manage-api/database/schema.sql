@@ -225,3 +225,18 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
     KEY idx_refresh_tokens_lookup (user_id, revoked_at, expires_at),
     CONSTRAINT fk_refresh_tokens_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS import_runs (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    imported_by_user_id BIGINT UNSIGNED NOT NULL,
+    source_name VARCHAR(191) NOT NULL,
+    import_type VARCHAR(50) NOT NULL DEFAULT 'json_bootstrap',
+    status ENUM('success', 'failed') NOT NULL,
+    summary_json JSON NULL,
+    error_message TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_import_runs_created_at (created_at),
+    KEY idx_import_runs_user (imported_by_user_id),
+    CONSTRAINT fk_import_runs_user FOREIGN KEY (imported_by_user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -154,9 +154,6 @@ final class UserService extends BaseService
         $this->requireSuperAdmin($actor);
         $user = $this->findUserById($userId, true);
         if ($user === null) {
-            throw new RuntimeException('User could not be loaded after update.', 500);
-        }
-        if ($user === null) {
             throw new RuntimeException('User not found.', 404);
         }
 
@@ -236,6 +233,9 @@ final class UserService extends BaseService
         $stmt->execute($fields);
 
         $user = $this->findUserById($userId, true);
+        if ($user === null) {
+            throw new RuntimeException('User could not be loaded after update.', 500);
+        }
 
         return [
             'status' => 200,

@@ -74,6 +74,34 @@ php -S localhost:8000 -t public
 - `POST /api/v1/admin/leave-balances/adjust`
 - `GET|POST /api/v1/admin/comp-off`
 - `GET|PUT|PATCH /api/v1/admin/comp-off/{id}`
+- `POST /api/v1/admin/bootstrap-import`
+
+## Super Admin Bootstrap Import
+
+You now have two ways to initialize master data and opening balances from one JSON file:
+
+### 1. PHP upload page
+
+- `GET /admin/bootstrap-import`
+
+This page is meant for `super_admin` users only.
+They log in with mobile + PIN and upload one JSON file through a browser form.
+
+### 2. API endpoint
+
+- `POST /api/v1/admin/bootstrap-import`
+
+This endpoint accepts:
+
+- `multipart/form-data` with `import_file`
+- or JSON body with `payload`
+
+The import runs inside one DB transaction.
+If any row fails validation, the full import is rolled back.
+
+Sample payload:
+
+- [bootstrap-payload.example.json](/Volumes/StudioSSD/Users/cainedaniel/Drive/Actual%20Inteligence%20Solutions/api/leave-manage-api/database/imports/bootstrap-payload.example.json)
 
 ## Notes
 
