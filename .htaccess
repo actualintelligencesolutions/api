@@ -8,3 +8,7 @@ RewriteRule ^ - [L]
 # Route Bill2QR API requests through the public front controller.
 RewriteRule ^bill2qr/?$ bill2qr/public/index.php [QSA,L]
 RewriteRule ^bill2qr/(.*)$ bill2qr/public/index.php [QSA,L]
+
+# Route Leave Manage API requests through the public front controller.
+RewriteRule ^leave-manage-api/?$ leave-manage-api/public/index.php [QSA,L]
+RewriteRule ^leave-manage-api/(.*)$ leave-manage-api/public/index.php [QSA,L]
