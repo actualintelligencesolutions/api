@@ -498,17 +498,8 @@ function handleBootstrapImportPage(AuthService $authService, ImportService $impo
 
         if ($action === 'login') {
             try {
-                $login = $authService->login([
-                    'mobile' => $_POST['mobile'] ?? null,
-                    'pin' => $_POST['pin'] ?? null,
-                    'device_uuid' => 'php-bootstrap-import-page',
-                ]);
-                $user = $login['data']['user'];
-                if (($user['role'] ?? null) !== 'super_admin') {
-                    throw new RuntimeException('Only super_admin users can access the bootstrap import page.', 403);
-                }
-
-                $_SESSION['leave_manage_super_admin_id'] = $user['id'];
+                $sessionUser = loginBootstrapPageSuperAdmin($authService);
+                $_SESSION['leave_manage_super_admin_id'] = $sessionUser['id'];
                 header('Location: ' . buildLocalPath('/admin/bootstrap-import'), true, 303);
                 exit;
             } catch (Throwable $exception) {
@@ -554,6 +545,103 @@ function authServiceSessionUser(int $userId): ?array
          LIMIT 1'
     );
     $stmt->execute(['id' => $userId]);
+    $user = $stmt->fetch();
+
+    return is_array($user) ? $user : null;
+}
+
+function loginBootstrapPageSuperAdmin(AuthService $authService): array
+{
+    $mobile = $_POST['mobile'] ?? null;
+    $pin = $_POST['pin'] ?? null;
+
+    if (bootstrapStaticLoginMatches($mobile, $pin)) {
+        $configuredMobile = normalizeBootstrapStaticMobile((string) env('BOOTSTRAP_IMPORT_STATIC_SUPER_ADMIN_MOBILE', ''));
+        if ($configuredMobile === null) {
+            throw new RuntimeException('BOOTSTRAP_IMPORT_STATIC_SUPER_ADMIN_MOBILE is not configured correctly.', 500);
+        }
+
+        $user = findBootstrapSuperAdminByMobile($configuredMobile);
+        if ($user === null) {
+            throw new RuntimeException('Configured static bootstrap super admin was not found in the database.', 404);
+        }
+
+        if (($user['role'] ?? null) !== 'super_admin' || ($user['status'] ?? null) !== 'active') {
+            throw new RuntimeException('Configured static bootstrap user must be an active super_admin.', 403);
+        }
+
+        return $user;
+    }
+
+    $login = $authService->login([
+        'mobile' => $mobile,
+        'pin' => $pin,
+        'device_uuid' => 'php-bootstrap-import-page',
+    ]);
+    $user = $login['data']['user'];
+    if (($user['role'] ?? null) !== 'super_admin') {
+        throw new RuntimeException('Only super_admin users can access the bootstrap import page.', 403);
+    }
+
+    $sessionUser = authServiceSessionUser((int) $user['id']);
+    if ($sessionUser === null) {
+        throw new RuntimeException('Super admin user could not be loaded after login.', 500);
+    }
+
+    return $sessionUser;
+}
+
+function bootstrapStaticLoginMatches(mixed $mobile, mixed $pin): bool
+{
+    $configuredMobile = normalizeBootstrapStaticMobile((string) env('BOOTSTRAP_IMPORT_STATIC_SUPER_ADMIN_MOBILE', ''));
+    $configuredPin = trim((string) env('BOOTSTRAP_IMPORT_STATIC_SUPER_ADMIN_PIN', ''));
+
+    if ($configuredMobile === null || $configuredPin === '') {
+        return false;
+    }
+
+    if (!is_string($mobile) && !is_int($mobile)) {
+        return false;
+    }
+    if (!is_string($pin) && !is_int($pin)) {
+        return false;
+    }
+
+    $submittedMobile = normalizeBootstrapStaticMobile((string) $mobile);
+    $submittedPin = trim((string) $pin);
+
+    if ($submittedMobile === null || $submittedPin === '') {
+        return false;
+    }
+
+    return hash_equals($configuredMobile, $submittedMobile) && hash_equals($configuredPin, $submittedPin);
+}
+
+function normalizeBootstrapStaticMobile(string $mobile): ?string
+{
+    $digits = preg_replace('/\D+/', '', trim($mobile));
+    if (!is_string($digits) || $digits === '') {
+        return null;
+    }
+
+    return $digits;
+}
+
+function findBootstrapSuperAdminByMobile(string $mobile): ?array
+{
+    $stmt = Database::connection()->prepare(
+        'SELECT u.*,
+                d.name AS department_name,
+                g.name AS designation_name,
+                ag.name AS approver_group_name
+         FROM users u
+         LEFT JOIN departments d ON d.id = u.department_id
+         LEFT JOIN designations g ON g.id = u.designation_id
+         LEFT JOIN approver_groups ag ON ag.id = u.approver_group_id
+         WHERE u.mobile = :mobile
+         LIMIT 1'
+    );
+    $stmt->execute(['mobile' => $mobile]);
     $user = $stmt->fetch();
 
     return is_array($user) ? $user : null;
