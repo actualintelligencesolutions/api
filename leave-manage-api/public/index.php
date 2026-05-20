@@ -602,7 +602,7 @@ function resolveBootstrapPageImportPayload(ImportService $importService): array
         ];
     }
 
-    return $importService->parseUploadedJsonFile($_FILES['import_file'] ?? []);
+    throw new InvalidArgumentException('Upload staff_master.json and/or holiday_calendar.json to continue.', 422);
 }
 
 function renderBootstrapImportPage(?array $sessionUser, array $errors, ?array $result): string
@@ -748,10 +748,7 @@ function renderBootstrapImportPanel(?array $sessionUser, array $errors, ?array $
                 </div>
             </div>
             <p class="muted">Upload one or both of these raw source files to let the API normalize them into users, approver groups, leave balances, and holidays.</p>
-            <hr style="border:0;border-top:1px solid #e1e7ee;margin:20px 0">
-            <label for="import_file">JSON file</label>
-            <input id="import_file" name="import_file" type="file" accept=".json,application/json">
-            <p class="muted">Use this field for the existing single bootstrap payload format. The import runs inside one database transaction. If any row is invalid, the whole import is rolled back.</p>
+            <p class="muted">The import runs inside one database transaction. If any row is invalid, the whole import is rolled back.</p>
             <div style="margin-top:18px"><button type="submit">Upload And Import</button></div>
         </form>
     </div>';
