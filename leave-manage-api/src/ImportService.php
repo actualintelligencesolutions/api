@@ -46,6 +46,7 @@ final class ImportService extends BaseService
         $normalized = $this->normalizeImportPayload($payload, $sourceName);
         $importType = $normalized['_meta']['import_type'] ?? 'json_bootstrap';
         $normalizedSourceName = $normalized['_meta']['source_name'] ?? $sourceName;
+        $actorId = isset($actor['id']) ? (int) $actor['id'] : 0;
         $summary = [
             'departments' => 0,
             'designations' => 0,
@@ -98,7 +99,7 @@ final class ImportService extends BaseService
                 $summary['leave_balances']++;
             }
 
-            $runId = $this->logImportRun((int) $actor['id'], $normalizedSourceName, $importType, 'success', $summary, null);
+            $runId = $this->logImportRun($actorId, $normalizedSourceName, $importType, 'success', $summary, null);
             $this->db->commit();
 
             return [
@@ -115,7 +116,7 @@ final class ImportService extends BaseService
             }
 
             try {
-                $this->logImportRun((int) $actor['id'], $normalizedSourceName, $importType, 'failed', $summary, $exception->getMessage());
+                $this->logImportRun($actorId, $normalizedSourceName, $importType, 'failed', $summary, $exception->getMessage());
             } catch (Throwable) {
             }
 
@@ -1185,8 +1186,12 @@ final class ImportService extends BaseService
         return $employeeCode === false ? null : (string) $employeeCode;
     }
 
-    private function logImportRun(int $actorId, string $sourceName, string $importType, string $status, array $summary, ?string $errorMessage): int
+    private function logImportRun(int $actorId, string $sourceName, string $importType, string $status, array $summary, ?string $errorMessage): ?int
     {
+        if ($actorId <= 0) {
+            return null;
+        }
+
         $stmt = $this->db->prepare(
             'INSERT INTO import_runs (
                 imported_by_user_id,

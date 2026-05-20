@@ -480,6 +480,10 @@ function handleBootstrapImportPage(AuthService $authService, ImportService $impo
     $result = null;
     $sessionUser = null;
 
+    if (!empty($_SESSION['leave_manage_static_super_admin'])) {
+        $sessionUser = staticBootstrapSessionUser();
+    }
+
     if (isset($_SESSION['leave_manage_super_admin_id'])) {
         $sessionUser = authServiceSessionUser((int) $_SESSION['leave_manage_super_admin_id']);
         if ($sessionUser === null || $sessionUser['role'] !== 'super_admin' || $sessionUser['status'] !== 'active') {
@@ -492,6 +496,7 @@ function handleBootstrapImportPage(AuthService $authService, ImportService $impo
         $action = $_POST['action'] ?? '';
         if ($action === 'logout') {
             unset($_SESSION['leave_manage_super_admin_id']);
+            unset($_SESSION['leave_manage_static_super_admin']);
             header('Location: ' . buildLocalPath('/admin/bootstrap-import'), true, 303);
             exit;
         }
@@ -499,7 +504,13 @@ function handleBootstrapImportPage(AuthService $authService, ImportService $impo
         if ($action === 'login') {
             try {
                 $sessionUser = loginBootstrapPageSuperAdmin($authService);
-                $_SESSION['leave_manage_super_admin_id'] = $sessionUser['id'];
+                if (!empty($sessionUser['_static_bootstrap_admin'])) {
+                    $_SESSION['leave_manage_static_super_admin'] = true;
+                    unset($_SESSION['leave_manage_super_admin_id']);
+                } else {
+                    $_SESSION['leave_manage_super_admin_id'] = $sessionUser['id'];
+                    unset($_SESSION['leave_manage_static_super_admin']);
+                }
                 header('Location: ' . buildLocalPath('/admin/bootstrap-import'), true, 303);
                 exit;
             } catch (Throwable $exception) {
@@ -556,21 +567,7 @@ function loginBootstrapPageSuperAdmin(AuthService $authService): array
     $pin = $_POST['pin'] ?? null;
 
     if (bootstrapStaticLoginMatches($mobile, $pin)) {
-        $configuredMobile = normalizeBootstrapStaticMobile((string) env('BOOTSTRAP_IMPORT_STATIC_SUPER_ADMIN_MOBILE', ''));
-        if ($configuredMobile === null) {
-            throw new RuntimeException('BOOTSTRAP_IMPORT_STATIC_SUPER_ADMIN_MOBILE is not configured correctly.', 500);
-        }
-
-        $user = findBootstrapSuperAdminByMobile($configuredMobile);
-        if ($user === null) {
-            throw new RuntimeException('Configured static bootstrap super admin was not found in the database.', 404);
-        }
-
-        if (($user['role'] ?? null) !== 'super_admin' || ($user['status'] ?? null) !== 'active') {
-            throw new RuntimeException('Configured static bootstrap user must be an active super_admin.', 403);
-        }
-
-        return $user;
+        return staticBootstrapSessionUser();
     }
 
     $login = $authService->login([
@@ -589,6 +586,25 @@ function loginBootstrapPageSuperAdmin(AuthService $authService): array
     }
 
     return $sessionUser;
+}
+
+function staticBootstrapSessionUser(): array
+{
+    $configuredMobile = normalizeBootstrapStaticMobile((string) env('BOOTSTRAP_IMPORT_STATIC_SUPER_ADMIN_MOBILE', ''));
+    if ($configuredMobile === null) {
+        throw new RuntimeException('BOOTSTRAP_IMPORT_STATIC_SUPER_ADMIN_MOBILE is not configured correctly.', 500);
+    }
+
+    return [
+        'id' => 0,
+        'employee_code' => 'STATIC-BOOTSTRAP-ADMIN',
+        'full_name' => 'Static Bootstrap Super Admin',
+        'mobile' => $configuredMobile,
+        'email' => null,
+        'role' => 'super_admin',
+        'status' => 'active',
+        '_static_bootstrap_admin' => true,
+    ];
 }
 
 function bootstrapStaticLoginMatches(mixed $mobile, mixed $pin): bool
@@ -625,26 +641,6 @@ function normalizeBootstrapStaticMobile(string $mobile): ?string
     }
 
     return $digits;
-}
-
-function findBootstrapSuperAdminByMobile(string $mobile): ?array
-{
-    $stmt = Database::connection()->prepare(
-        'SELECT u.*,
-                d.name AS department_name,
-                g.name AS designation_name,
-                ag.name AS approver_group_name
-         FROM users u
-         LEFT JOIN departments d ON d.id = u.department_id
-         LEFT JOIN designations g ON g.id = u.designation_id
-         LEFT JOIN approver_groups ag ON ag.id = u.approver_group_id
-         WHERE u.mobile = :mobile
-         LIMIT 1'
-    );
-    $stmt->execute(['mobile' => $mobile]);
-    $user = $stmt->fetch();
-
-    return is_array($user) ? $user : null;
 }
 
 function sendHtml(string $html, int $status = 200): void
