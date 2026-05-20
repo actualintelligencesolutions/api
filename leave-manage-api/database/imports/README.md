@@ -46,5 +46,60 @@ Accepted request styles:
 
 1. `multipart/form-data` with file field `import_file`
 2. JSON body with top-level `payload`
+3. JSON body with top-level `staff_master` and/or `holiday_calendar`
+4. Single raw JSON file upload for `staff_master.json` or `holiday_calendar.json`
 
 See `bootstrap-payload.example.json` for the supported shape.
+There is also a ready-to-edit example for this deployment flow:
+
+- `subansiri-bootstrap.example.json`
+- root `staff_master.json`
+- root `holiday_calendar.json`
+
+## Raw Source Support
+
+The importer now supports two raw source shapes directly:
+
+### `staff_master.json`
+
+Top-level array of staff rows with fields such as:
+
+- `employee_id`
+- `name`
+- `mobile`
+- `pin`
+- `role`
+- `department`
+- `designation`
+- `casual_leave`
+- `sick_leave`
+- `earned_leave`
+- `c_off`
+- `status`
+- `email`
+- `approval_enabled`
+
+Normalization rules:
+
+- `employee_id` becomes `employee_code`
+- blank departments become `null`
+- designation names are converted into generated designation codes
+- one default approver group is created and all `admin` / `super_admin` users become members
+- leave balances become opening balances for the current UTC year
+- leave types are auto-created as `CL`, `SL`, `EL`, and `COFF`
+
+### `holiday_calendar.json`
+
+Top-level array of holiday rows with fields:
+
+- `holiday_date`
+- `holiday_name`
+- `notes`
+
+Normalization rules:
+
+- ISO datetimes like `2026-01-01T00:00:00` are trimmed to `2026-01-01`
+- `holiday_name` becomes `name`
+- `notes` becomes `holiday_type`
+- `location_code` defaults to `null`
+- `is_optional` defaults to `0`

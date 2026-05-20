@@ -463,6 +463,13 @@ function resolveImportPayload(array $input, ImportService $importService): array
         ];
     }
 
+    if ($input !== []) {
+        return [
+            'source_name' => 'request-body',
+            'payload' => $input,
+        ];
+    }
+
     throw new InvalidArgumentException('Import payload is required. Upload import_file or send payload JSON.', 422);
 }
 

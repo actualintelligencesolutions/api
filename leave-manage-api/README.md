@@ -95,6 +95,8 @@ This endpoint accepts:
 
 - `multipart/form-data` with `import_file`
 - or JSON body with `payload`
+- or JSON body with `staff_master` and/or `holiday_calendar`
+- or single raw file uploads for `staff_master.json` and `holiday_calendar.json`
 
 The import runs inside one DB transaction.
 If any row fails validation, the full import is rolled back.

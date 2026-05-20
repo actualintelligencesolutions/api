@@ -1437,11 +1437,29 @@ Two supported input forms:
 
 2. Multipart upload with file field `import_file`
 
+3. JSON body with raw sources
+
+```json
+{
+  "staff_master": [],
+  "holiday_calendar": []
+}
+```
+
+4. Single raw JSON file upload named like `staff_master.json` or `holiday_calendar.json`
+
 Validation and rules:
 
 - payload sections must be arrays when present
 - uploaded file must be a valid `.json` file
 - every row inside each section must be a JSON object
+- raw `holiday_calendar` rows may contain `holiday_date`, `holiday_name`, and `notes`
+- raw holiday dates may be full ISO datetimes and are normalized to `YYYY-MM-DD`
+- raw `staff_master` rows may contain `employee_id`, `name`, `mobile`, `pin`, `role`, `department`, `designation`, `casual_leave`, `sick_leave`, `earned_leave`, `c_off`, `status`, `email`, and `approval_enabled`
+- raw staff imports create one default approver group and auto-create `CL`, `SL`, `EL`, and `COFF` leave types
+- blank raw department values are imported as `null`
+- only imported `admin` and `super_admin` users become approver-group members
+- empty-string raw leave balances are skipped
 - import runs in a transaction
 - records are upserted by internal logic rather than blindly inserted
 
@@ -1451,7 +1469,7 @@ Response `200`:
 {
   "success": true,
   "data": {
-    "message": "Bootstrap JSON imported successfully.",
+    "message": "Import completed successfully.",
     "import_run_id": 12,
     "summary": {
       "departments": 2,

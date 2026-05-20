@@ -1,0 +1,142 @@
+{
+  "departments": [
+    {
+      "code": "ENG",
+      "name": "Engineering",
+      "status": "active"
+    },
+    {
+      "code": "HR",
+      "name": "Human Resources",
+      "status": "active"
+    }
+  ],
+  "designations": [
+    {
+      "code": "MGR",
+      "name": "Manager",
+      "status": "active"
+    },
+    {
+      "code": "STAFF",
+      "name": "Staff",
+      "status": "active"
+    }
+  ],
+  "approver_groups": [
+    {
+      "code": "SUB-APPROVERS",
+      "name": "Subansiri Approvers",
+      "description": "Primary approver group for the Subansiri team",
+      "status": "active",
+      "members": [
+        {
+          "employee_code": "SUB100",
+          "member_role": "primary",
+          "status": "active"
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "employee_code": "SUB100",
+      "full_name": "Subansiri Admin",
+      "mobile": "9946580637",
+      "email": "subansiri.admin@example.com",
+      "role": "super_admin",
+      "pin": "1234",
+      "status": "active",
+      "department_code": "ENG",
+      "designation_code": "MGR",
+      "approver_group_code": "SUB-APPROVERS",
+      "joining_date": "2026-05-20"
+    },
+    {
+      "employee_code": "SUB200",
+      "full_name": "Subansiri Staff",
+      "mobile": "9946580638",
+      "email": "subansiri.staff@example.com",
+      "role": "staff",
+      "pin": "1234",
+      "status": "active",
+      "department_code": "ENG",
+      "designation_code": "STAFF",
+      "approver_group_code": "SUB-APPROVERS",
+      "joining_date": "2026-05-20"
+    }
+  ],
+  "leave_types": [
+    {
+      "code": "CL",
+      "name": "Casual Leave",
+      "description": "General short leave",
+      "unit": "day",
+      "yearly_quota": 12,
+      "carry_forward_allowed": 0,
+      "max_carry_forward": 0,
+      "requires_approval": 1,
+      "allow_comp_off": 0,
+      "status": "active"
+    },
+    {
+      "code": "SL",
+      "name": "Sick Leave",
+      "description": "Medical leave",
+      "unit": "day",
+      "yearly_quota": 12,
+      "carry_forward_allowed": 0,
+      "max_carry_forward": 0,
+      "requires_approval": 1,
+      "allow_comp_off": 0,
+      "status": "active"
+    }
+  ],
+  "holidays": [
+    {
+      "holiday_date": "2026-08-15",
+      "name": "Independence Day",
+      "holiday_type": "public",
+      "location_code": null,
+      "is_optional": 0
+    }
+  ],
+  "leave_balances": [
+    {
+      "employee_code": "SUB100",
+      "leave_type_code": "CL",
+      "period_year": 2026,
+      "opening_balance": 12,
+      "credited_balance": 0,
+      "used_balance": 0,
+      "pending_balance": 0
+    },
+    {
+      "employee_code": "SUB100",
+      "leave_type_code": "SL",
+      "period_year": 2026,
+      "opening_balance": 12,
+      "credited_balance": 0,
+      "used_balance": 0,
+      "pending_balance": 0
+    },
+    {
+      "employee_code": "SUB200",
+      "leave_type_code": "CL",
+      "period_year": 2026,
+      "opening_balance": 12,
+      "credited_balance": 0,
+      "used_balance": 0,
+      "pending_balance": 0
+    },
+    {
+      "employee_code": "SUB200",
+      "leave_type_code": "SL",
+      "period_year": 2026,
+      "opening_balance": 12,
+      "credited_balance": 0,
+      "used_balance": 0,
+      "pending_balance": 0
+    }
+  ]
+}

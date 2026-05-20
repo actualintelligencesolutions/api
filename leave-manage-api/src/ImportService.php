@@ -4,11 +4,48 @@ declare(strict_types=1);
 
 final class ImportService extends BaseService
 {
+    private const DEFAULT_APPROVER_GROUP_CODE = 'DEFAULT-APPROVERS';
+    private const DEFAULT_APPROVER_GROUP_NAME = 'Default Approvers';
+    private const DEFAULT_APPROVER_GROUP_DESCRIPTION = 'Auto-generated approver group from raw staff import';
+    private const IMPORT_SECTIONS = [
+        'departments',
+        'designations',
+        'approver_groups',
+        'users',
+        'leave_types',
+        'holidays',
+        'leave_balances',
+    ];
+    private const RAW_LEAVE_TYPES = [
+        'CL' => [
+            'name' => 'Casual Leave',
+            'description' => 'Imported from staff_master casual_leave',
+            'allow_comp_off' => 0,
+        ],
+        'SL' => [
+            'name' => 'Sick Leave',
+            'description' => 'Imported from staff_master sick_leave',
+            'allow_comp_off' => 0,
+        ],
+        'EL' => [
+            'name' => 'Earned Leave',
+            'description' => 'Imported from staff_master earned_leave',
+            'allow_comp_off' => 0,
+        ],
+        'COFF' => [
+            'name' => 'Comp Off',
+            'description' => 'Imported from staff_master c_off',
+            'allow_comp_off' => 1,
+        ],
+    ];
+
     public function importBootstrapPayload(array $actor, array $payload, string $sourceName): array
     {
         $this->requireSuperAdmin($actor);
 
-        $normalized = $this->validatePayload($payload);
+        $normalized = $this->normalizeImportPayload($payload, $sourceName);
+        $importType = $normalized['_meta']['import_type'] ?? 'json_bootstrap';
+        $normalizedSourceName = $normalized['_meta']['source_name'] ?? $sourceName;
         $summary = [
             'departments' => 0,
             'designations' => 0,
@@ -61,13 +98,13 @@ final class ImportService extends BaseService
                 $summary['leave_balances']++;
             }
 
-            $runId = $this->logImportRun((int) $actor['id'], $sourceName, 'success', $summary, null);
+            $runId = $this->logImportRun((int) $actor['id'], $normalizedSourceName, $importType, 'success', $summary, null);
             $this->db->commit();
 
             return [
                 'status' => 200,
                 'data' => [
-                    'message' => 'Bootstrap JSON imported successfully.',
+                    'message' => 'Import completed successfully.',
                     'import_run_id' => $runId,
                     'summary' => $summary,
                 ],
@@ -78,7 +115,7 @@ final class ImportService extends BaseService
             }
 
             try {
-                $this->logImportRun((int) $actor['id'], $sourceName, 'failed', $summary, $exception->getMessage());
+                $this->logImportRun((int) $actor['id'], $normalizedSourceName, $importType, 'failed', $summary, $exception->getMessage());
             } catch (Throwable) {
             }
 
@@ -109,7 +146,7 @@ final class ImportService extends BaseService
 
         $decoded = json_decode($contents, true);
         if (!is_array($decoded)) {
-            throw new InvalidArgumentException('Uploaded file must contain a JSON object.', 422);
+            throw new InvalidArgumentException('Uploaded file must contain a JSON array or object.', 422);
         }
 
         return [
@@ -118,36 +155,437 @@ final class ImportService extends BaseService
         ];
     }
 
-    private function validatePayload(array $payload): array
+    private function normalizeImportPayload(array $payload, string $sourceName): array
+    {
+        if ($this->looksLikeLegacyPayload($payload)) {
+            return $this->validateLegacyPayload($payload, $sourceName);
+        }
+
+        if ($this->looksLikeCombinedRawPayload($payload)) {
+            return $this->normalizeCombinedRawPayload($payload, $sourceName);
+        }
+
+        if (array_is_list($payload)) {
+            return $this->normalizeRawArrayPayload($payload, $sourceName);
+        }
+
+        throw new InvalidArgumentException(
+            'Unsupported import payload shape. Expected legacy bootstrap sections, raw holiday array, raw staff array, or a combined object with staff_master/holiday_calendar.',
+            422
+        );
+    }
+
+    private function looksLikeLegacyPayload(array $payload): bool
+    {
+        foreach (self::IMPORT_SECTIONS as $section) {
+            if (array_key_exists($section, $payload)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function validateLegacyPayload(array $payload, string $sourceName): array
+    {
+        $normalized = $this->emptyNormalizedPayload();
+        foreach (self::IMPORT_SECTIONS as $section) {
+            $normalized[$section] = $this->normalizeList($payload[$section] ?? [], $section);
+        }
+
+        $normalized['_meta'] = [
+            'import_type' => 'json_bootstrap',
+            'source_name' => $sourceName,
+        ];
+
+        return $normalized;
+    }
+
+    private function looksLikeCombinedRawPayload(array $payload): bool
+    {
+        return array_key_exists('staff_master', $payload) || array_key_exists('holiday_calendar', $payload);
+    }
+
+    private function normalizeCombinedRawPayload(array $payload, string $sourceName): array
+    {
+        $normalized = $this->emptyNormalizedPayload();
+
+        if (array_key_exists('staff_master', $payload)) {
+            $normalized = $this->mergeNormalizedPayloads(
+                $normalized,
+                $this->normalizeRawStaffMaster($this->normalizeList($payload['staff_master'], 'staff_master'))
+            );
+        }
+
+        if (array_key_exists('holiday_calendar', $payload)) {
+            $normalized = $this->mergeNormalizedPayloads(
+                $normalized,
+                $this->normalizeRawHolidayCalendar($this->normalizeList($payload['holiday_calendar'], 'holiday_calendar'))
+            );
+        }
+
+        $normalized['_meta'] = [
+            'import_type' => 'raw_combined',
+            'source_name' => $sourceName,
+        ];
+
+        return $normalized;
+    }
+
+    private function normalizeRawArrayPayload(array $payload, string $sourceName): array
+    {
+        $sourceType = $this->detectRawArraySourceType($payload, $sourceName);
+
+        if ($sourceType === 'holiday_calendar') {
+            $normalized = $this->normalizeRawHolidayCalendar($payload);
+            $normalized['_meta'] = [
+                'import_type' => 'raw_holiday_calendar',
+                'source_name' => $sourceName,
+            ];
+
+            return $normalized;
+        }
+
+        if ($sourceType === 'staff_master') {
+            $normalized = $this->normalizeRawStaffMaster($payload);
+            $normalized['_meta'] = [
+                'import_type' => 'raw_staff_master',
+                'source_name' => $sourceName,
+            ];
+
+            return $normalized;
+        }
+
+        throw new InvalidArgumentException('Unsupported raw import payload.', 422);
+    }
+
+    private function detectRawArraySourceType(array $payload, string $sourceName): string
+    {
+        $lowerSourceName = strtolower($sourceName);
+        if (str_contains($lowerSourceName, 'holiday')) {
+            return 'holiday_calendar';
+        }
+        if (str_contains($lowerSourceName, 'staff')) {
+            return 'staff_master';
+        }
+
+        $firstRow = $payload[0] ?? null;
+        if (!is_array($firstRow)) {
+            throw new InvalidArgumentException(
+                'Unable to detect raw import source type. Name the file like holiday_calendar.json or staff_master.json, or send a combined object.',
+                422
+            );
+        }
+
+        if (array_key_exists('employee_id', $firstRow) || array_key_exists('casual_leave', $firstRow)) {
+            return 'staff_master';
+        }
+
+        if (array_key_exists('holiday_name', $firstRow) || array_key_exists('holiday_date', $firstRow)) {
+            return 'holiday_calendar';
+        }
+
+        throw new InvalidArgumentException(
+            'Unable to detect raw import source type from the uploaded array. Expected staff_master or holiday_calendar row fields.',
+            422
+        );
+    }
+
+    private function emptyNormalizedPayload(): array
     {
         return [
-            'departments' => $this->normalizeList($payload['departments'] ?? []),
-            'designations' => $this->normalizeList($payload['designations'] ?? []),
-            'approver_groups' => $this->normalizeList($payload['approver_groups'] ?? []),
-            'users' => $this->normalizeList($payload['users'] ?? []),
-            'leave_types' => $this->normalizeList($payload['leave_types'] ?? []),
-            'holidays' => $this->normalizeList($payload['holidays'] ?? []),
-            'leave_balances' => $this->normalizeList($payload['leave_balances'] ?? []),
+            'departments' => [],
+            'designations' => [],
+            'approver_groups' => [],
+            'users' => [],
+            'leave_types' => [],
+            'holidays' => [],
+            'leave_balances' => [],
         ];
     }
 
-    private function normalizeList(mixed $value): array
+    private function mergeNormalizedPayloads(array $base, array $incoming): array
+    {
+        foreach (self::IMPORT_SECTIONS as $section) {
+            $base[$section] = array_merge($base[$section], $incoming[$section] ?? []);
+        }
+
+        return $base;
+    }
+
+    private function normalizeList(mixed $value, string $sectionName = 'section'): array
     {
         if ($value === null) {
             return [];
         }
 
         if (!is_array($value)) {
-            throw new InvalidArgumentException('Import sections must be arrays.', 422);
+            throw new InvalidArgumentException($sectionName . ' must be an array.', 422);
         }
 
         foreach ($value as $row) {
             if (!is_array($row)) {
-                throw new InvalidArgumentException('Every import row must be a JSON object.', 422);
+                throw new InvalidArgumentException('Every row in ' . $sectionName . ' must be a JSON object.', 422);
             }
         }
 
         return $value;
+    }
+
+    private function normalizeRawHolidayCalendar(array $rows): array
+    {
+        $normalized = $this->emptyNormalizedPayload();
+
+        foreach ($rows as $index => $row) {
+            $dateValue = $this->requiredScalarString($row['holiday_date'] ?? null, 'holiday_calendar[' . $index . '].holiday_date', 50);
+            $holidayName = $this->requiredScalarString($row['holiday_name'] ?? null, 'holiday_calendar[' . $index . '].holiday_name', 150);
+            $notes = $this->optionalScalarString($row['notes'] ?? null, 'holiday_calendar[' . $index . '].notes', 50);
+
+            $normalized['holidays'][] = [
+                'holiday_date' => $this->normalizeRawHolidayDate($dateValue, 'holiday_calendar[' . $index . '].holiday_date'),
+                'name' => $holidayName,
+                'holiday_type' => $notes ?? 'public',
+                'location_code' => null,
+                'is_optional' => 0,
+            ];
+        }
+
+        return $normalized;
+    }
+
+    private function normalizeRawStaffMaster(array $rows): array
+    {
+        $normalized = $this->emptyNormalizedPayload();
+        $periodYear = (int) gmdate('Y');
+        $seenEmployeeCodes = [];
+        $seenMobiles = [];
+        $designationCodes = [];
+        $departmentCodes = [];
+        $approverCandidates = [];
+        $leaveTypeMaxBalances = array_fill_keys(array_keys(self::RAW_LEAVE_TYPES), 0.0);
+
+        foreach ($rows as $index => $row) {
+            $employeeCode = $this->requiredScalarString($row['employee_id'] ?? null, 'staff_master[' . $index . '].employee_id', 50);
+            $fullName = $this->requiredScalarString($row['name'] ?? null, 'staff_master[' . $index . '].name', 150);
+            $mobileRaw = $this->requiredScalarString($row['mobile'] ?? null, 'staff_master[' . $index . '].mobile', 30);
+            $mobile = Validator::requiredMobile($mobileRaw);
+            $pin = Validator::requiredPin($this->requiredScalarString($row['pin'] ?? null, 'staff_master[' . $index . '].pin', 20), 'staff_master[' . $index . '].pin');
+            $role = $this->normalizeRawRole($row['role'] ?? null, 'staff_master[' . $index . '].role');
+            $status = $this->normalizeRawStatus($row['status'] ?? null, 'staff_master[' . $index . '].status');
+            $email = $this->optionalScalarString($row['email'] ?? null, 'staff_master[' . $index . '].email', 150);
+            $departmentName = $this->optionalScalarString($row['department'] ?? null, 'staff_master[' . $index . '].department', 120);
+            $designationName = $this->requiredScalarString($row['designation'] ?? null, 'staff_master[' . $index . '].designation', 120);
+
+            if (isset($seenEmployeeCodes[$employeeCode])) {
+                throw new InvalidArgumentException('Duplicate employee_id detected in staff_master: ' . $employeeCode . '.', 422);
+            }
+            if (isset($seenMobiles[$mobile])) {
+                throw new InvalidArgumentException('Duplicate mobile detected in staff_master: ' . $mobile . '.', 422);
+            }
+            $existingEmployeeCodeForMobile = $this->lookupUserEmployeeCodeByMobile($mobile);
+            if ($existingEmployeeCodeForMobile !== null && $existingEmployeeCodeForMobile !== $employeeCode) {
+                throw new InvalidArgumentException(
+                    'Mobile ' . $mobile . ' already belongs to employee_code ' . $existingEmployeeCodeForMobile . '.',
+                    422
+                );
+            }
+            $seenEmployeeCodes[$employeeCode] = true;
+            $seenMobiles[$mobile] = true;
+
+            $designationCode = $this->rememberGeneratedCode($designationCodes, $designationName, 'DSG');
+            if ($departmentName !== null) {
+                $departmentCode = $this->rememberGeneratedCode($departmentCodes, $departmentName, 'DPT');
+                $normalized['departments'][$departmentCode] = [
+                    'code' => $departmentCode,
+                    'name' => $departmentName,
+                    'status' => 'active',
+                ];
+            } else {
+                $departmentCode = null;
+            }
+
+            $normalized['designations'][$designationCode] = [
+                'code' => $designationCode,
+                'name' => $designationName,
+                'status' => 'active',
+            ];
+
+            $normalized['users'][] = [
+                'employee_code' => $employeeCode,
+                'full_name' => $fullName,
+                'mobile' => $mobile,
+                'email' => $email,
+                'role' => $role,
+                'pin' => $pin,
+                'status' => $status,
+                'department_code' => $departmentCode,
+                'designation_code' => $designationCode,
+                'approver_group_code' => self::DEFAULT_APPROVER_GROUP_CODE,
+                'joining_date' => null,
+            ];
+
+            if (in_array($role, ['admin', 'super_admin'], true)) {
+                $approverCandidates[] = [
+                    'employee_code' => $employeeCode,
+                    'role' => $role,
+                ];
+            }
+
+            foreach ([
+                'casual_leave' => 'CL',
+                'sick_leave' => 'SL',
+                'earned_leave' => 'EL',
+                'c_off' => 'COFF',
+            ] as $field => $leaveTypeCode) {
+                $openingBalance = $this->optionalRawNumeric($row[$field] ?? null, 'staff_master[' . $index . '].' . $field);
+                if ($openingBalance === null) {
+                    continue;
+                }
+
+                $leaveTypeMaxBalances[$leaveTypeCode] = max($leaveTypeMaxBalances[$leaveTypeCode], $openingBalance);
+                $normalized['leave_balances'][] = [
+                    'employee_code' => $employeeCode,
+                    'leave_type_code' => $leaveTypeCode,
+                    'period_year' => $periodYear,
+                    'opening_balance' => $openingBalance,
+                    'credited_balance' => 0,
+                    'used_balance' => 0,
+                    'pending_balance' => 0,
+                ];
+            }
+        }
+
+        $normalized['departments'] = array_values($normalized['departments']);
+        $normalized['designations'] = array_values($normalized['designations']);
+
+        $members = [];
+        $primaryEmployeeCode = $this->resolvePrimaryApproverEmployeeCode($approverCandidates);
+        foreach ($approverCandidates as $candidate) {
+            $members[] = [
+                'employee_code' => $candidate['employee_code'],
+                'member_role' => $candidate['employee_code'] === $primaryEmployeeCode ? 'primary' : 'member',
+                'status' => 'active',
+            ];
+        }
+
+        $normalized['approver_groups'][] = [
+            'code' => self::DEFAULT_APPROVER_GROUP_CODE,
+            'name' => self::DEFAULT_APPROVER_GROUP_NAME,
+            'description' => self::DEFAULT_APPROVER_GROUP_DESCRIPTION,
+            'status' => 'active',
+            'members' => $members,
+        ];
+
+        foreach (self::RAW_LEAVE_TYPES as $code => $config) {
+            $normalized['leave_types'][] = [
+                'code' => $code,
+                'name' => $config['name'],
+                'description' => $config['description'],
+                'unit' => 'day',
+                'yearly_quota' => $leaveTypeMaxBalances[$code] ?? 0,
+                'carry_forward_allowed' => 0,
+                'max_carry_forward' => 0,
+                'requires_approval' => 1,
+                'allow_comp_off' => $config['allow_comp_off'],
+                'status' => 'active',
+            ];
+        }
+
+        return $normalized;
+    }
+
+    private function requiredScalarString(mixed $value, string $field, int $maxLength = 255): string
+    {
+        if ($value === null) {
+            throw new InvalidArgumentException($field . ' is required.', 422);
+        }
+
+        return Validator::requiredString((string) $value, $field, $maxLength);
+    }
+
+    private function optionalScalarString(mixed $value, string $field, int $maxLength = 255): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        return Validator::optionalString((string) $value, $field, $maxLength);
+    }
+
+    private function optionalRawNumeric(mixed $value, string $field): ?float
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (is_string($value) && trim($value) === '') {
+            return null;
+        }
+
+        return Validator::requiredNumeric($value, $field);
+    }
+
+    private function normalizeRawRole(mixed $value, string $field): string
+    {
+        return Validator::enum(
+            strtolower($this->requiredScalarString($value, $field, 50)),
+            $field,
+            ['super_admin', 'admin', 'staff']
+        );
+    }
+
+    private function normalizeRawStatus(mixed $value, string $field): string
+    {
+        return Validator::enum(
+            strtolower($this->requiredScalarString($value, $field, 50)),
+            $field,
+            ['active', 'inactive']
+        );
+    }
+
+    private function normalizeRawHolidayDate(string $value, string $field): string
+    {
+        if (!preg_match('/^(\d{4}-\d{2}-\d{2})(?:[T\s].*)?$/', trim($value), $matches)) {
+            throw new InvalidArgumentException($field . ' must contain a date in YYYY-MM-DD or ISO datetime format.', 422);
+        }
+
+        return Validator::requiredDate($matches[1], $field);
+    }
+
+    private function rememberGeneratedCode(array &$codeMap, string $name, string $prefix): string
+    {
+        if (isset($codeMap[$name])) {
+            return $codeMap[$name];
+        }
+
+        $base = preg_replace('/[^A-Z0-9]+/', '-', strtoupper(trim($name))) ?? '';
+        $base = trim($base, '-');
+        if ($base === '') {
+            $base = $prefix;
+        }
+
+        $suffix = '-' . strtoupper(substr(sha1($name), 0, 6));
+        $candidate = substr($base, 0, 50 - strlen($suffix)) . $suffix;
+        $usedCodes = array_values($codeMap);
+        if (in_array($candidate, $usedCodes, true)) {
+            $fallbackSuffix = '-' . strtoupper(substr(sha1($prefix . ':' . $name), 0, 8));
+            $candidate = substr($base, 0, 50 - strlen($fallbackSuffix)) . $fallbackSuffix;
+        }
+
+        $codeMap[$name] = $candidate;
+
+        return $candidate;
+    }
+
+    private function resolvePrimaryApproverEmployeeCode(array $approverCandidates): ?string
+    {
+        foreach ($approverCandidates as $candidate) {
+            if ($candidate['role'] === 'super_admin') {
+                return $candidate['employee_code'];
+            }
+        }
+
+        return $approverCandidates[0]['employee_code'] ?? null;
     }
 
     private function upsertDepartment(array $department): void
@@ -738,7 +1176,16 @@ final class ImportService extends BaseService
         return $role === false ? null : (string) $role;
     }
 
-    private function logImportRun(int $actorId, string $sourceName, string $status, array $summary, ?string $errorMessage): int
+    private function lookupUserEmployeeCodeByMobile(string $mobile): ?string
+    {
+        $stmt = $this->db->prepare('SELECT employee_code FROM users WHERE mobile = :mobile LIMIT 1');
+        $stmt->execute(['mobile' => $mobile]);
+        $employeeCode = $stmt->fetchColumn();
+
+        return $employeeCode === false ? null : (string) $employeeCode;
+    }
+
+    private function logImportRun(int $actorId, string $sourceName, string $importType, string $status, array $summary, ?string $errorMessage): int
     {
         $stmt = $this->db->prepare(
             'INSERT INTO import_runs (
@@ -762,7 +1209,7 @@ final class ImportService extends BaseService
         $stmt->execute([
             'imported_by_user_id' => $actorId,
             'source_name' => $sourceName,
-            'import_type' => 'json_bootstrap',
+            'import_type' => $importType,
             'status' => $status,
             'summary_json' => json_encode($summary, JSON_UNESCAPED_SLASHES),
             'error_message' => $errorMessage,
