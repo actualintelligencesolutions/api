@@ -521,7 +521,7 @@ function handleBootstrapImportPage(AuthService $authService, ImportService $impo
                 $errors[] = 'Please log in as a super_admin first.';
             } else {
                 try {
-                    $payload = $importService->parseUploadedJsonFile($_FILES['import_file'] ?? []);
+                    $payload = resolveBootstrapPageImportPayload($importService);
                     $import = $importService->importBootstrapPayload(
                         $sessionUser,
                         $payload['payload'],
@@ -573,6 +573,38 @@ function buildLocalPath(string $path): string
     return $prefix . $path;
 }
 
+function resolveBootstrapPageImportPayload(ImportService $importService): array
+{
+    $staffFile = $_FILES['staff_master_file'] ?? null;
+    $holidayFile = $_FILES['holiday_calendar_file'] ?? null;
+    $hasStaffFile = is_array($staffFile) && (($staffFile['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK);
+    $hasHolidayFile = is_array($holidayFile) && (($holidayFile['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK);
+
+    if ($hasStaffFile || $hasHolidayFile) {
+        $payload = [];
+        $sourceNames = [];
+
+        if ($hasStaffFile) {
+            $staffPayload = $importService->parseUploadedJsonFile($staffFile);
+            $payload['staff_master'] = $staffPayload['payload'];
+            $sourceNames[] = $staffPayload['source_name'];
+        }
+
+        if ($hasHolidayFile) {
+            $holidayPayload = $importService->parseUploadedJsonFile($holidayFile);
+            $payload['holiday_calendar'] = $holidayPayload['payload'];
+            $sourceNames[] = $holidayPayload['source_name'];
+        }
+
+        return [
+            'source_name' => implode(' + ', $sourceNames),
+            'payload' => $payload,
+        ];
+    }
+
+    return $importService->parseUploadedJsonFile($_FILES['import_file'] ?? []);
+}
+
 function renderBootstrapImportPage(?array $sessionUser, array $errors, ?array $result): string
 {
     $isLoggedIn = $sessionUser !== null;
@@ -613,7 +645,7 @@ function renderBootstrapImportPage(?array $sessionUser, array $errors, ?array $r
             <div class="topbar">
                 <div>
                     <h1>' . $escapedTitle . '</h1>
-                    <p class="muted">Upload one JSON file to initialize or refresh departments, designations, approver groups, users, leave types, holidays, and opening balances.</p>
+                    <p class="muted">Upload one bootstrap JSON file, or separately upload staff and holiday source JSON files for server-side normalization.</p>
                 </div>
                 ' . ($isLoggedIn ? '<span class="badge">Logged in as ' . htmlspecialchars((string) $sessionUser['full_name'], ENT_QUOTES, 'UTF-8') . '</span>' : '') . '
             </div>
@@ -705,9 +737,21 @@ function renderBootstrapImportPanel(?array $sessionUser, array $errors, ?array $
         ' . $successHtml . '
         <form method="post" action="" enctype="multipart/form-data">
             <input type="hidden" name="action" value="import">
+            <div class="row">
+                <div>
+                    <label for="staff_master_file">Staff master JSON</label>
+                    <input id="staff_master_file" name="staff_master_file" type="file" accept=".json,application/json">
+                </div>
+                <div>
+                    <label for="holiday_calendar_file">Holiday calendar JSON</label>
+                    <input id="holiday_calendar_file" name="holiday_calendar_file" type="file" accept=".json,application/json">
+                </div>
+            </div>
+            <p class="muted">Upload one or both of these raw source files to let the API normalize them into users, approver groups, leave balances, and holidays.</p>
+            <hr style="border:0;border-top:1px solid #e1e7ee;margin:20px 0">
             <label for="import_file">JSON file</label>
-            <input id="import_file" name="import_file" type="file" accept=".json,application/json" required>
-            <p class="muted">The import runs inside one database transaction. If any row is invalid, the whole import is rolled back.</p>
+            <input id="import_file" name="import_file" type="file" accept=".json,application/json">
+            <p class="muted">Use this field for the existing single bootstrap payload format. The import runs inside one database transaction. If any row is invalid, the whole import is rolled back.</p>
             <div style="margin-top:18px"><button type="submit">Upload And Import</button></div>
         </form>
     </div>';
